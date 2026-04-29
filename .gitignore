@@ -21,6 +21,7 @@ frontend/.vite-temp/
 # Runtime data
 logs/
 data/recordings/
+data/*.json
 data/*.jsonl
 data/*.db
 
@@ -38,6 +39,8 @@ models/
 Thumbs.db
 .idea/
 .vscode/
+.playwright-mcp/
+voicetype-validation.png
 
 # Local secrets
 .env

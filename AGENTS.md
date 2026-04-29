@@ -25,6 +25,9 @@ Read additional documents only when the task requires them:
 
 - Keep changes scoped to the current task.
 - Do not revert unrelated user changes.
+- Define acceptance criteria and validation before substantial implementation.
+- Run the validation gate after changes; report exact blockers if hardware, models, browser, or credentials prevent validation.
+- For frontend/app work, verify the running UI in a browser and check visible errors, not just TypeScript/build output.
 - Update `PROJECT_STATUS.md` and `CHANGELOG.md` after meaningful code, config, data, or operational changes.
 - Update `RUNBOOK.md` when commands, setup, validation, or failure handling changes.
 - Record major architecture, persistence, provider, or workflow decisions in `docs/adr/`.

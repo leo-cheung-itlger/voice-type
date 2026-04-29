@@ -1,45 +1,45 @@
 <template>
-  <div class="stats-page">
-    <h2>使用统计</h2>
+  <div class="view">
+    <section class="section stat-grid">
+      <div>
+        <strong>{{ store.totalEntries }}</strong>
+        <span>总次数</span>
+      </div>
+      <div>
+        <strong>{{ store.avgDelay }}s</strong>
+        <span>平均延迟</span>
+      </div>
+      <div>
+        <strong>{{ store.errorMarks.length }}</strong>
+        <span>错误标记</span>
+      </div>
+    </section>
 
-    <div class="stats-summary">
-      <div class="card stat-card">
-        <span class="stat-number">{{ store.totalEntries }}</span>
-        <span class="stat-desc">总识别次数</span>
+    <section class="section">
+      <div class="section-title">
+        <span>常用片段</span>
+        <button class="btn btn-small btn-ghost" @click="refresh">刷新</button>
       </div>
-      <div class="card stat-card">
-        <span class="stat-number">{{ store.avgDelay }}s</span>
-        <span class="stat-desc">平均延迟</span>
-      </div>
-      <div class="card stat-card">
-        <span class="stat-number">{{ store.errorMarks.length }}</span>
-        <span class="stat-desc">错误标记</span>
-      </div>
-    </div>
-
-    <div class="card section">
-      <h3>常用词组 TOP 20</h3>
-      <div class="word-chart">
-        <div v-for="item in store.topWords.slice(0, 20)" :key="item.word" class="word-bar">
-          <span class="word-label">{{ item.word }}</span>
-          <div class="bar-track"><div class="bar-fill" :style="{ width: barWidth(item.count) + '%' }"></div></div>
-          <span class="word-count">{{ item.count }}</span>
+      <div class="panel word-list">
+        <div v-for="item in store.topWords.slice(0, 18)" :key="item.word" class="word-row">
+          <span>{{ item.word }}</span>
+          <div><i :style="{ width: barWidth(item.count) + '%' }"></i></div>
+          <em>{{ item.count }}</em>
         </div>
-        <div v-if="store.topWords.length === 0" class="empty">暂无数据</div>
+        <div v-if="store.topWords.length === 0" class="empty">暂无统计</div>
       </div>
-    </div>
+    </section>
 
-    <div class="card section">
-      <h3>错误标记列表</h3>
-      <div class="error-list">
-        <div v-for="(mark, i) in store.errorMarks" :key="i" class="error-item">
-          <span class="error-original">{{ mark.text }}</span>
-          <span class="error-arrow">→</span>
-          <span class="error-marked">{{ mark.marked_text }}</span>
+    <section class="section">
+      <div class="section-title"><span>错误标记</span></div>
+      <div class="panel error-list">
+        <div v-for="(mark, i) in store.errorMarks" :key="i" class="error-row">
+          <p>{{ mark.text }}</p>
+          <span>{{ mark.marked_text }}</span>
         </div>
         <div v-if="store.errorMarks.length === 0" class="empty">暂无错误标记</div>
       </div>
-    </div>
+    </section>
   </div>
 </template>
 
@@ -51,34 +51,105 @@ const store = useAppStore()
 
 function barWidth(count: number): number {
   const max = store.topWords[0]?.count || 1
-  return (count / max) * 100
+  return Math.max(8, (count / max) * 100)
 }
 
-onMounted(() => {
+function refresh() {
   store.fetchStats()
   store.fetchErrorMarks()
-})
+}
+
+onMounted(refresh)
 </script>
 
 <style scoped>
-.stats-page { padding: 24px; max-width: 900px; margin: 0 auto; }
-.stats-page h2 { margin-bottom: 16px; }
-.stats-summary { display: flex; gap: 16px; margin-bottom: 20px; }
-.stat-card { flex: 1; text-align: center; }
-.stat-number { display: block; font-size: 28px; font-weight: 700; color: var(--accent-blue); }
-.stat-desc { display: block; font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
-.section { margin-bottom: 20px; }
-.section h3 { margin-bottom: 12px; font-size: 15px; }
-.word-chart { display: flex; flex-direction: column; gap: 4px; }
-.word-bar { display: flex; align-items: center; gap: 8px; }
-.word-label { width: 80px; text-align: right; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bar-track { flex: 1; height: 16px; background: var(--bg-base); border-radius: 4px; overflow: hidden; }
-.bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-teal)); border-radius: 4px; transition: width 0.3s; }
-.word-count { width: 40px; color: var(--text-secondary); font-size: 12px; }
-.error-list { display: flex; flex-direction: column; gap: 4px; }
-.error-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px; background: var(--bg-base); }
-.error-original { color: var(--accent-red); font-size: 13px; }
-.error-arrow { color: var(--text-muted); }
-.error-marked { color: var(--accent-green); font-size: 13px; }
-.empty { color: var(--text-muted); text-align: center; padding: 20px; }
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.stat-grid div {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.stat-grid strong,
+.stat-grid span {
+  display: block;
+}
+
+.stat-grid strong {
+  font-size: 20px;
+}
+
+.stat-grid span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.word-list,
+.error-list {
+  overflow: hidden;
+}
+
+.word-row {
+  display: grid;
+  grid-template-columns: 86px 1fr 36px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--line);
+}
+
+.word-row:last-child,
+.error-row:last-child {
+  border-bottom: 0;
+}
+
+.word-row span {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.word-row div {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #101211;
+}
+
+.word-row i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-2);
+}
+
+.word-row em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  text-align: right;
+}
+
+.error-row {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.error-row p {
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.error-row span {
+  color: var(--accent);
+  font-size: 12px;
+}
 </style>

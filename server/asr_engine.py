@@ -54,7 +54,15 @@ class ASREngine:
             logger.info(f"Loading Qwen3-ASR from local path: {model_name}")
             self._qwen_model = Qwen3ASRModel.from_pretrained(model_name)
             if self._gpu and hasattr(self._qwen_model, 'to'):
-                self._qwen_model = self._qwen_model.to("cuda")
+                try:
+                    import torch
+
+                    if torch.cuda.is_available():
+                        self._qwen_model = self._qwen_model.to("cuda")
+                    else:
+                        logger.warning("CUDA requested but not available; using CPU")
+                except Exception as e:
+                    logger.warning(f"CUDA availability check failed; using CPU: {e}")
             self._backend = "qwen-asr"
             logger.info(f"Qwen3-ASR model loaded: {model_name} (gpu={self._gpu})")
             return True

@@ -44,13 +44,14 @@ class HistoryManager:
         except Exception as e:
             logger.error(f"Failed to save history: {e}")
 
-    def add_entry(self, text: str, task_id: str, delay: float, audio_path: str = ""):
+    def add_entry(self, text: str, task_id: str, delay: float, audio_path: str = "", model: str = ""):
         entry = {
             "text": text,
             "task_id": task_id,
             "timestamp": time.time(),
             "delay": round(delay, 3),
             "audio_path": audio_path,
+            "model": model,
         }
         self._entries.append(entry)
         self._save()
@@ -62,6 +63,14 @@ class HistoryManager:
     def clear_entries(self):
         self._entries.clear()
         self._save()
+
+    def delete_entry(self, task_id: str) -> bool:
+        before = len(self._entries)
+        self._entries = [entry for entry in self._entries if entry.get("task_id") != task_id]
+        changed = len(self._entries) != before
+        if changed:
+            self._save()
+        return changed
 
     def add_error_mark(self, text: str, marked_text: str):
         mark = {

@@ -19,19 +19,16 @@ if not exist "venv" (
     call venv\Scripts\activate.bat
 )
 
-echo [3/3] 启动服务...
+echo [3/3] 启动控制台...
 echo.
 
-start "VoiceType-Server" cmd /k "venv\Scripts\python.exe server\asr_server.py"
-timeout /t 3 /nobreak >nul
-start "VoiceType-Client" cmd /k "venv\Scripts\python.exe client\client_core.py"
-start "VoiceType-API" cmd /k "venv\Scripts\python.exe api\api_server.py"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-dev.ps1" -Root "%~dp0"
 
 echo.
-echo 所有服务已启动！
-echo   - ASR 服务端: ws://0.0.0.0:52341
-echo   - 客户端: 已启动（按 CapsLock 开始录音）
+echo 控制台已启动！
 echo   - API 后端: http://127.0.0.1:52342
+echo   - Web 控制台: http://127.0.0.1:52343
 echo.
-echo 按任意键退出此窗口（服务继续运行）...
-pause >nul
+echo 请在控制台中启动 ASR 服务端和客户端。
+echo.
+echo 此窗口可以关闭，后台服务会继续运行。

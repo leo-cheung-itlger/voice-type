@@ -1,113 +1,225 @@
 <template>
-  <div class="dashboard">
-    <div class="status-panel">
-      <div class="card status-card" :class="{ running: store.serverRunning }">
-        <span :class="store.serverRunning ? 'dot dot-green' : 'dot dot-red'"></span>
-        <div class="status-info">
-          <h3>ASR 服务端</h3>
-          <p>{{ store.serverRunning ? `运行中 (PID: ${store.serverPid})` : '未启动' }}</p>
+  <div class="view dashboard-view">
+    <section class="section hero">
+      <div class="hero-main">
+        <span class="label">最新识别</span>
+        <p v-if="store.currentPartial" class="live-text partial">{{ store.currentPartial }}</p>
+        <p v-else-if="store.latestEntry" class="live-text">{{ store.latestEntry.text }}</p>
+        <p v-else class="live-text muted">等待按键录音</p>
+      </div>
+      <div class="hero-actions">
+        <button class="btn btn-primary" @click="store.startAll()" :disabled="store.serverRunning && store.clientRunning">启动</button>
+        <button class="btn btn-ghost" @click="store.stopAll()" :disabled="!store.serverRunning && !store.clientRunning">停止</button>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">
+        <span>服务</span>
+        <button class="btn btn-small btn-ghost" @click="refresh">刷新</button>
+      </div>
+      <div class="panel">
+        <div class="row">
+          <div>
+            <div class="value">ASR 服务端</div>
+            <div class="label">{{ serverLabel }}</div>
+          </div>
+          <button
+            class="btn btn-small"
+            :class="store.serverRunning && store.serverManaged ? 'btn-danger' : 'btn-primary'"
+            :disabled="store.serverRunning && !store.serverManaged"
+            @click="toggleServer"
+          >
+            {{ serverButtonLabel }}
+          </button>
         </div>
-        <button v-if="!store.serverRunning" @click="store.startServer()" class="btn btn-success">启动</button>
-        <button v-else @click="store.stopServer()" class="btn btn-danger">停止</button>
-      </div>
-
-      <div class="card status-card" :class="{ running: store.clientRunning }">
-        <span :class="store.clientRunning ? 'dot dot-green' : 'dot dot-red'"></span>
-        <div class="status-info">
-          <h3>客户端</h3>
-          <p>{{ store.clientRunning ? `运行中 (PID: ${store.clientPid})` : '未启动' }}</p>
+        <div class="row">
+          <div>
+            <div class="value">录音客户端</div>
+            <div class="label">{{ store.clientRunning ? `PID ${store.clientPid || '-'}` : store.config.client.shortcut_key }}</div>
+          </div>
+          <button class="btn btn-small" :class="store.clientRunning ? 'btn-danger' : 'btn-primary'" @click="toggleClient">
+            {{ store.clientRunning ? '停止' : '启动' }}
+          </button>
         </div>
-        <button v-if="!store.clientRunning" @click="store.startClient()" class="btn btn-success">启动</button>
-        <button v-else @click="store.stopClient()" class="btn btn-danger">停止</button>
-      </div>
-    </div>
-
-    <div class="quick-actions">
-      <button @click="store.startAll()" class="btn btn-primary" :disabled="store.serverRunning && store.clientRunning">
-        一键启动全部
-      </button>
-      <button @click="store.stopAll()" class="btn btn-danger" :disabled="!store.serverRunning && !store.clientRunning">
-        一键停止全部
-      </button>
-    </div>
-
-    <div class="stats-row">
-      <div class="card stat-item">
-        <span class="stat-value">{{ store.totalEntries }}</span>
-        <span class="stat-label">识别次数</span>
-      </div>
-      <div class="card stat-item">
-        <span class="stat-value">{{ store.avgDelay }}s</span>
-        <span class="stat-label">平均延迟</span>
-      </div>
-      <div class="card stat-item">
-        <span class="stat-value">{{ store.wsConnected ? '已连接' : '未连接' }}</span>
-        <span class="stat-label">WebSocket</span>
-      </div>
-    </div>
-
-    <div class="card realtime-panel">
-      <h3>实时识别</h3>
-      <div class="realtime-text">
-        <span v-if="store.currentPartial" class="partial">{{ store.currentPartial }}</span>
-        <span v-else class="placeholder">等待语音输入...</span>
-      </div>
-    </div>
-
-    <div class="card recent-panel">
-      <h3>最近识别</h3>
-      <div class="recent-list">
-        <div v-for="entry in store.history.slice(-5).reverse()" :key="entry.task_id" class="recent-item">
-          <span class="recent-text">{{ entry.text }}</span>
-          <span class="recent-delay">{{ entry.delay.toFixed(2) }}s</span>
-          <button @click="store.copyToClipboard(entry.text)" class="btn btn-ghost btn-small">复制</button>
+        <div class="row">
+          <div>
+            <div class="value">控制台连接</div>
+            <div class="label">{{ store.wsConnected ? '正在监听识别结果' : '未连接到 API WebSocket' }}</div>
+          </div>
+          <button class="btn btn-small btn-ghost" @click="store.connectRecognition()">重连</button>
         </div>
-        <div v-if="store.history.length === 0" class="empty">暂无记录</div>
       </div>
-    </div>
+    </section>
+
+    <section class="section quick-stats">
+      <div>
+        <strong>{{ store.totalEntries }}</strong>
+        <span>次数</span>
+      </div>
+      <div>
+        <strong>{{ store.avgDelay }}s</strong>
+        <span>平均</span>
+      </div>
+      <div>
+        <strong>{{ store.config.client.output_mode }}</strong>
+        <span>输出</span>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">
+        <span>最近</span>
+        <button v-if="store.latestEntry" class="btn btn-small btn-ghost" @click="store.copyToClipboard(store.latestEntry.text)">复制最新</button>
+      </div>
+      <div class="panel recent-list">
+        <div v-for="entry in recentEntries" :key="entry.task_id" class="recent-item">
+          <p>{{ entry.text }}</p>
+          <span>{{ entry.delay.toFixed(2) }}s</span>
+        </div>
+        <div v-if="recentEntries.length === 0" class="empty">暂无识别记录</div>
+      </div>
+    </section>
+
+    <section v-if="store.recentIssues.length" class="section">
+      <div class="section-title"><span>最近问题</span></div>
+      <div class="panel issue-list">
+        <div v-for="(issue, i) in store.recentIssues.slice(-3)" :key="i" class="issue-line">{{ issue.line }}</div>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { computed } from 'vue'
 import { useAppStore } from '../stores/app'
 
 const store = useAppStore()
-let timer: ReturnType<typeof setInterval> | null = null
-
-onMounted(() => {
-  store.fetchStatus()
-  store.fetchHistory()
-  timer = setInterval(() => store.fetchStatus(), 5000)
+const recentEntries = computed(() => [...store.history].slice(-4).reverse())
+const serverLabel = computed(() => {
+  if (store.serverRunning && store.serverManaged) return `托管运行 PID ${store.serverPid || '-'}`
+  if (store.serverRunning && !store.serverManaged) return `外部服务占用端口 ${store.config.server.port}`
+  return '等待启动'
+})
+const serverButtonLabel = computed(() => {
+  if (store.serverRunning && store.serverManaged) return '停止'
+  if (store.serverRunning && !store.serverManaged) return '外部'
+  return '启动'
 })
 
-onUnmounted(() => {
-  if (timer) clearInterval(timer)
-})
+async function refresh() {
+  await Promise.all([store.fetchStatus(), store.fetchHealth(), store.fetchHistory()])
+}
+
+async function toggleServer() {
+  if (store.serverRunning && !store.serverManaged) return
+  if (store.serverRunning) await store.stopServer()
+  else await store.startServer()
+}
+
+async function toggleClient() {
+  if (store.clientRunning) await store.stopClient()
+  else await store.startClient()
+}
 </script>
 
 <style scoped>
-.dashboard { padding: 24px; max-width: 900px; margin: 0 auto; }
-.status-panel { display: flex; gap: 16px; margin-bottom: 16px; }
-.status-card { display: flex; align-items: center; gap: 12px; flex: 1; }
-.status-card.running { border-color: var(--accent-green); }
-.status-info { flex: 1; }
-.status-info h3 { font-size: 15px; margin-bottom: 2px; }
-.status-info p { font-size: 13px; color: var(--text-secondary); }
-.quick-actions { display: flex; gap: 12px; margin-bottom: 16px; }
-.quick-actions .btn { flex: 1; justify-content: center; }
-.stats-row { display: flex; gap: 16px; margin-bottom: 16px; }
-.stat-item { flex: 1; text-align: center; }
-.stat-value { display: block; font-size: 24px; font-weight: 700; color: var(--accent-blue); }
-.stat-label { display: block; font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
-.realtime-panel { margin-bottom: 16px; }
-.realtime-panel h3 { margin-bottom: 12px; font-size: 15px; }
-.realtime-text { min-height: 40px; padding: 12px; border-radius: 8px; background: var(--bg-base); font-size: 16px; }
-.partial { color: var(--accent-yellow); }
-.placeholder { color: var(--text-muted); }
-.recent-panel h3 { margin-bottom: 12px; font-size: 15px; }
-.recent-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px; margin-bottom: 4px; background: var(--bg-base); }
-.recent-text { flex: 1; font-size: 14px; }
-.recent-delay { color: var(--text-secondary); font-size: 12px; }
-.empty { color: var(--text-muted); text-align: center; padding: 20px; }
+.hero {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(125, 220, 155, 0.24);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(125, 220, 155, 0.08), rgba(24, 27, 25, 0.9));
+}
+
+.live-text {
+  min-height: 78px;
+  max-height: 150px;
+  overflow-y: auto;
+  margin-top: 8px;
+  font-size: 24px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.partial {
+  color: var(--warn);
+}
+
+.hero-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.quick-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.quick-stats div {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.quick-stats strong,
+.quick-stats span {
+  display: block;
+}
+
+.quick-stats strong {
+  overflow: hidden;
+  font-size: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-stats span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.recent-list {
+  overflow: hidden;
+}
+
+.recent-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--line);
+}
+
+.recent-item:last-child {
+  border-bottom: 0;
+}
+
+.recent-item p {
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-item span,
+.issue-line {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.issue-list {
+  padding: 10px 12px;
+}
+
+.issue-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 </style>

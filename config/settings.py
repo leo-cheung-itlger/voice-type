@@ -1,11 +1,49 @@
-from dataclasses import dataclass, field
-from typing import Literal
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from typing import Any, Dict, Literal
+import json
 import os
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODELS_DIR = os.path.join(os.path.dirname(BASE_DIR), "models")
+DEFAULT_MODELS_DIR = os.path.join(os.path.dirname(BASE_DIR), "models")
+LEGACY_MODELS_DIR = r"C:\Program Files\CapsWriter-Offline-Windows-64bit\models"
+MODELS_DIR = os.environ.get("VOICETYPE_MODELS_DIR", DEFAULT_MODELS_DIR)
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 LOGS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
+APP_CONFIG_FILE = os.path.join(DATA_DIR, "app_config.json")
+
+MODEL_DIR_NAMES = {
+    "qwen3-asr-0.6b": "Qwen3-ASR-0.6B",
+    "qwen3-asr-1.7b": "Qwen3-ASR-1.7B",
+    "funasr-nano": "Fun-ASR-Nano-GGUF",
+    "sensevoice": "SenseVoice-Small",
+    "paraformer": "paraformer-offline-zh",
+}
+
+
+def model_root_candidates() -> list:
+    roots = []
+    for root in (
+        os.environ.get("VOICETYPE_MODELS_DIR", ""),
+        DEFAULT_MODELS_DIR,
+        os.path.join(BASE_DIR, "models"),
+        LEGACY_MODELS_DIR,
+    ):
+        if root and root not in roots:
+            roots.append(root)
+    return roots
+
+
+def resolve_model_dir(model: str) -> str:
+    dirname = MODEL_DIR_NAMES.get(model, "")
+    if not dirname:
+        return ""
+
+    first_candidate = os.path.join(MODELS_DIR, dirname)
+    for root in model_root_candidates():
+        candidate = os.path.join(root, dirname)
+        if os.path.isdir(candidate):
+            return candidate
+    return first_candidate
 
 
 @dataclass
@@ -21,15 +59,8 @@ class ServerConfig:
     ping_timeout: int = 10
 
     def __post_init__(self):
-        if not self.model_dir:
-            model_map = {
-                "qwen3-asr-0.6b": "Qwen3-ASR-0.6B",
-                "qwen3-asr-1.7b": "Qwen3-ASR-1.7B",
-                "funasr-nano": "Fun-ASR-Nano-GGUF",
-                "sensevoice": "SenseVoice-Small",
-                "paraformer": "paraformer-offline-zh",
-            }
-            self.model_dir = os.path.join(MODELS_DIR, model_map.get(self.model, ""))
+        if not self.model_dir or not os.path.isdir(self.model_dir):
+            self.model_dir = resolve_model_dir(self.model)
 
 
 @dataclass
@@ -51,6 +82,8 @@ class ClientConfig:
     save_audio: bool = True
     audio_dir: str = ""
     hotword_files: list = field(default_factory=lambda: ["hot-zh.txt", "hot-en.txt", "hot-rule.txt"])
+    notification_enabled: bool = True
+    notification_sound: bool = True
     reconnect_max_retries: int = 0
     reconnect_base_delay: float = 1.0
     reconnect_max_delay: float = 30.0
@@ -73,3 +106,57 @@ class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     client: ClientConfig = field(default_factory=ClientConfig)
     api: APIConfig = field(default_factory=APIConfig)
+
+
+def _known_fields(cls) -> set:
+    return {f.name for f in fields(cls)}
+
+
+def _merge_dataclass(instance: Any, values: Dict[str, Any]):
+    if not isinstance(values, dict):
+        return instance
+    allowed = _known_fields(type(instance))
+    for key, value in values.items():
+        if key in allowed:
+            setattr(instance, key, value)
+    if hasattr(instance, "__post_init__"):
+        instance.__post_init__()
+    return instance
+
+
+def app_config_to_dict(config: AppConfig) -> Dict[str, Any]:
+    if not is_dataclass(config):
+        return {}
+    return asdict(config)
+
+
+def load_app_config(filepath: str = APP_CONFIG_FILE) -> AppConfig:
+    config = AppConfig()
+    if not os.path.exists(filepath):
+        return config
+
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return config
+
+    _merge_dataclass(config.server, data.get("server", {}))
+    _merge_dataclass(config.client, data.get("client", {}))
+    _merge_dataclass(config.api, data.get("api", {}))
+    return config
+
+
+def save_app_config(config: AppConfig, filepath: str = APP_CONFIG_FILE):
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(app_config_to_dict(config), f, ensure_ascii=False, indent=2)
+
+
+def update_app_config(values: Dict[str, Any], filepath: str = APP_CONFIG_FILE) -> AppConfig:
+    config = load_app_config(filepath)
+    _merge_dataclass(config.server, values.get("server", {}))
+    _merge_dataclass(config.client, values.get("client", {}))
+    _merge_dataclass(config.api, values.get("api", {}))
+    save_app_config(config, filepath)
+    return config
