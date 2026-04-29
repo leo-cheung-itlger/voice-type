@@ -1,0 +1,127 @@
+:root {
+  --bg-base: #11111b;
+  --bg-surface: #1e1e2e;
+  --bg-overlay: #313244;
+  --text-primary: #cdd6f4;
+  --text-secondary: #a6adc8;
+  --text-muted: #585b70;
+  --accent-blue: #89b4fa;
+  --accent-green: #a6e3a1;
+  --accent-red: #f38ba8;
+  --accent-yellow: #f9e2af;
+  --accent-teal: #94e2d5;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  min-height: 100vh;
+}
+
+#app {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 200px;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--bg-overlay);
+  padding: 16px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-logo {
+  padding: 16px 20px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent-blue);
+  border-bottom: 1px solid var(--bg-overlay);
+  margin-bottom: 8px;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 8px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 14px;
+  transition: all 0.15s;
+  cursor: pointer;
+}
+
+.nav-item:hover {
+  background: var(--bg-overlay);
+  color: var(--text-primary);
+}
+
+.nav-item.active {
+  background: rgba(137, 180, 250, 0.15);
+  color: var(--accent-blue);
+}
+
+.nav-icon {
+  font-size: 16px;
+  width: 20px;
+  text-align: center;
+}
+
+.main-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn:hover { opacity: 0.9; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: var(--accent-blue); color: var(--bg-base); }
+.btn-success { background: var(--accent-green); color: var(--bg-base); }
+.btn-danger { background: var(--accent-red); color: var(--bg-base); }
+.btn-ghost { background: transparent; border: 1px solid var(--bg-overlay); color: var(--text-primary); }
+.btn-small { padding: 4px 10px; font-size: 12px; }
+
+.card {
+  padding: 16px;
+  border-radius: 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-overlay);
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.dot-green { background: var(--accent-green); }
+.dot-red { background: var(--accent-red); }
+.dot-yellow { background: var(--accent-yellow); }

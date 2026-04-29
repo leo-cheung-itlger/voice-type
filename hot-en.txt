@@ -1,0 +1,4 @@
+# English hotword file
+# Format: source -> target
+# Example:
+# github -> GitHub
