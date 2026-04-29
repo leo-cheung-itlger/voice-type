@@ -89,7 +89,7 @@ def ffmpeg_status() -> Dict[str, Any]:
         "ffmpeg": ffmpeg_path or "",
         "ffprobe": ffprobe_path or "",
         "supported_extensions": sorted(SUPPORTED_EXTENSIONS),
-        "message": "ffmpeg is available" if ffmpeg_path else "ffmpeg not found. Install ffmpeg or set VOICETYPE_FFMPEG_PATH.",
+        "message": "ffmpeg 可用" if ffmpeg_path else "未检测到 ffmpeg。请安装 ffmpeg，或设置 VOICETYPE_FFMPEG_PATH。",
     }
 
 
@@ -247,6 +247,7 @@ class TranscriptionManager:
         self._filepath = filepath
         self._tasks: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.RLock()
+        self._run_lock = threading.Lock()
         self._load()
 
     def _load(self):
@@ -373,6 +374,10 @@ class TranscriptionManager:
             return bool(self._tasks.get(task_id, {}).get("cancel_requested"))
 
     def run_task(self, task_id: str, default_model: str, default_model_dir: str, gpu: bool, gpu_backend: str):
+        with self._run_lock:
+            self._run_task_locked(task_id, default_model, default_model_dir, gpu, gpu_backend)
+
+    def _run_task_locked(self, task_id: str, default_model: str, default_model_dir: str, gpu: bool, gpu_backend: str):
         task = self.get_task(task_id)
         if not task:
             return

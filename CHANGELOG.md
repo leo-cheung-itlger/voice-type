@@ -2,6 +2,13 @@
 
 ## 2026-04-29
 
+- Added the first file transcription module: HTTP queue APIs, ffmpeg detection, browser upload support, path-based tasks, JSON/TXT/SRT export, cancellation, and OpenAI-compatible LLM polishing config.
+- Added the compact frontend Transcriptions page with drag/drop upload confirmation, path-based task creation, queue status, format selection, and LLM polishing controls.
+- Added project-local agent Skill instructions at `.agents/skills/voicetype-transcription/SKILL.md` and ADR-0003 documenting the API-first transcription design.
+- Validation: Python compile passed; frontend typecheck and production build passed; new API endpoints smoke-tested on an isolated API port; browser Transcriptions page loaded after restarting the API/frontend dev processes with no new console errors. Full mp3/mp4 transcription smoke is blocked because this machine currently has no `ffmpeg` on PATH or `VOICETYPE_FFMPEG_PATH`.
+
+## 2026-04-29
+
 - Fixed the audio sample-rate contract between client and ASR server: audio start/end messages now carry `sample_rate`, and the server no longer hardcodes raw audio as 16 kHz.
 - Added `scripts/asr_fixture_smoke.py` to run repeatable mp3 fixture recognition in direct-model mode or WebSocket service mode.
 - Added CPU fallback for Qwen3-ASR when CUDA is requested but unavailable.

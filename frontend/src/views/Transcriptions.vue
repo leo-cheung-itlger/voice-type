@@ -124,6 +124,10 @@
         <input v-model="store.llmConfig.base_url" class="field" placeholder="OpenAI 兼容 base_url" />
         <input v-model="store.llmConfig.model" class="field" placeholder="模型名，例如 gpt-4.1-mini" />
         <input v-model="store.llmConfig.api_key" class="field" type="password" placeholder="API key，仅保存到本地 ignored 配置" />
+        <div class="two-fields">
+          <input v-model.number="store.llmConfig.temperature" class="field" type="number" min="0" max="2" step="0.1" placeholder="温度" />
+          <input v-model.number="store.llmConfig.max_segment_chars" class="field" type="number" min="500" step="100" placeholder="每段最大字数" />
+        </div>
       </div>
     </section>
   </div>
@@ -146,7 +150,7 @@ const pathText = ref('')
 let timer: ReturnType<typeof setInterval> | null = null
 
 const accepts = computed(() => store.ffmpeg?.supported_extensions?.join(',') || '.mp3,.wav,.mp4,.mkv,.mov')
-const llmReady = computed(() => Boolean(store.llmConfig.model && store.llmConfig.api_key && store.llmConfig.api_key !== '********'))
+const llmReady = computed(() => Boolean(store.llmConfig.model && store.llmConfig.api_key))
 const canCreatePathTask = computed(() => Boolean(pathText.value.trim() && store.ffmpeg?.available && formats.value.length))
 
 function payload() {
@@ -281,6 +285,12 @@ input[type="checkbox"] {
   display: grid;
   gap: 9px;
   padding: 10px;
+}
+
+.two-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
 
 .path-field {

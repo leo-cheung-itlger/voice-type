@@ -21,6 +21,7 @@ frontend/.vite-temp/
 # Runtime data
 logs/
 data/recordings/
+data/transcription_uploads/
 data/*.json
 data/*.jsonl
 data/*.db

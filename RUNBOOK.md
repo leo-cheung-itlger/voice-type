@@ -144,6 +144,50 @@ For daily ASR changes:
 
 If a step cannot run because local model files, microphone access, GPU, or OS interaction is unavailable, record the exact blocked step and the manual command needed.
 
+## File Transcription
+
+VoiceType exposes a separate file transcription queue so long audio/video jobs do not share the real-time right-Shift client path.
+
+Check ffmpeg:
+
+```bat
+curl http://127.0.0.1:52342/api/ffmpeg/status
+```
+
+Create a path-based transcription task:
+
+```bat
+curl -X POST http://127.0.0.1:52342/api/transcriptions ^
+  -H "Content-Type: application/json" ^
+  -d "{\"input_files\":[\"C:\\Media\\demo.mp4\"],\"formats\":[\"json\",\"txt\",\"srt\"],\"polish\":false}"
+```
+
+Poll task status and outputs:
+
+```bat
+curl http://127.0.0.1:52342/api/transcriptions
+curl http://127.0.0.1:52342/api/transcriptions/<task_id>
+curl http://127.0.0.1:52342/api/transcriptions/<task_id>/outputs
+```
+
+Configure OpenAI-compatible polishing:
+
+```bat
+curl -X PUT http://127.0.0.1:52342/api/llm/config ^
+  -H "Content-Type: application/json" ^
+  -d "{\"base_url\":\"https://api.openai.com/v1\",\"model\":\"gpt-4.1-mini\",\"api_key\":\"...\",\"temperature\":0.2}"
+```
+
+Browser drag/drop uploads files to ignored local runtime storage under `data/transcription_uploads/`. Path-based tasks preserve the default behavior of exporting to a sibling `<source>_transcript` folder. A later Tauri shell can pass drag/drop source paths directly to the same HTTP API.
+
+File transcription validation:
+
+1. `GET /api/ffmpeg/status` must report `available=true` before mp3/mp4 decode tests can pass.
+2. Submit at least one mp3 and one mp4 task with `formats=["json","txt","srt"]`.
+3. Confirm the task reaches `completed` and output paths exist.
+4. With no LLM API key, confirm the UI disables polishing or the API returns a clear configuration error.
+5. With a valid OpenAI-compatible key, submit a short task with `polish=true` and confirm polished TXT/SRT outputs are created.
+
 ## Failure Notes
 
 - In PowerShell, `npm` may fail if script execution policy blocks `npm.ps1`; use `cmd /c npm run build` or a normal Command Prompt.
