@@ -31,7 +31,7 @@ Start all desktop services:
 start.bat
 ```
 
-This launches the API and frontend dev server in hidden background processes. Frontend dev output is written to `logs/frontend_dev.log`; API stdout/stderr are written to `logs/api_stdout.log` and `logs/api_stderr.log`.
+This first cleans project-owned duplicate processes, then launches API, frontend dev server, ASR server, and the recording client in hidden background processes. Frontend dev output is written to `logs/frontend_dev.log`; API stdout/stderr are written to `logs/api_stdout.log` and `logs/api_stderr.log`; managed ASR/client logs are written under `logs/managed_*`.
 
 Stop desktop services:
 
@@ -58,7 +58,7 @@ Start the current Web control console:
 start.bat
 ```
 
-Then open `http://127.0.0.1:52343/#/` and start the ASR server/client from the control tab.
+Then open `http://127.0.0.1:55343/#/`. ASR server and client are started by `start.bat`; the control tab can still restart them.
 
 ## Validation Order
 
@@ -92,10 +92,11 @@ venv\Scripts\python.exe api\api_server.py
 
 Then verify:
 
-- `http://127.0.0.1:52342/api/status`
-- `http://127.0.0.1:52342/api/health`
-- `http://127.0.0.1:52342/api/config`
-- `http://127.0.0.1:52342/api/models`
+- `http://127.0.0.1:55342/api/status`
+- `http://127.0.0.1:55342/api/health`
+- `http://127.0.0.1:55342/api/config`
+- `http://127.0.0.1:55342/api/models`
+- `http://127.0.0.1:55342/api/hardware`
 
 5. ASR smoke test:
 
@@ -120,7 +121,7 @@ For frontend/control-console changes:
 
 1. Run Python compile and frontend build.
 2. Start API and frontend.
-3. Open `http://127.0.0.1:52343/#/` in a browser.
+3. Open `http://127.0.0.1:55343/#/` in a browser.
 4. Check console errors and visible UI layout.
 5. Visit Control, History, Hotwords, Stats, and Settings tabs.
 6. Verify API-driven fields load instead of silently showing defaults.
@@ -151,7 +152,7 @@ VoiceType exposes a separate file transcription queue so long audio/video jobs d
 Check ffmpeg:
 
 ```bat
-curl http://127.0.0.1:52342/api/ffmpeg/status
+curl http://127.0.0.1:55342/api/ffmpeg/status
 ```
 
 ffmpeg is resolved in this order:
@@ -163,7 +164,7 @@ ffmpeg is resolved in this order:
 Create a path-based transcription task:
 
 ```bat
-curl -X POST http://127.0.0.1:52342/api/transcriptions ^
+curl -X POST http://127.0.0.1:55342/api/transcriptions ^
   -H "Content-Type: application/json" ^
   -d "{\"input_files\":[\"C:\\Media\\demo.mp4\"],\"formats\":[\"json\",\"txt\",\"srt\"],\"polish\":false}"
 ```
@@ -171,15 +172,15 @@ curl -X POST http://127.0.0.1:52342/api/transcriptions ^
 Poll task status and outputs:
 
 ```bat
-curl http://127.0.0.1:52342/api/transcriptions
-curl http://127.0.0.1:52342/api/transcriptions/<task_id>
-curl http://127.0.0.1:52342/api/transcriptions/<task_id>/outputs
+curl http://127.0.0.1:55342/api/transcriptions
+curl http://127.0.0.1:55342/api/transcriptions/<task_id>
+curl http://127.0.0.1:55342/api/transcriptions/<task_id>/outputs
 ```
 
 Configure OpenAI-compatible polishing:
 
 ```bat
-curl -X PUT http://127.0.0.1:52342/api/llm/config ^
+curl -X PUT http://127.0.0.1:55342/api/llm/config ^
   -H "Content-Type: application/json" ^
   -d "{\"base_url\":\"https://api.openai.com/v1\",\"model\":\"gpt-4.1-mini\",\"api_key\":\"...\",\"temperature\":0.2}"
 ```
@@ -200,6 +201,6 @@ File transcription validation:
 - In the Codex sandbox, Vite/esbuild may fail with `spawn EPERM`; rerun the build in a normal local terminal.
 - Qwen3-ASR initialization is configured for offline local model paths under the parent-level `models/` directory.
 - If CUDA is unavailable, Qwen3-ASR should remain on CPU instead of failing startup.
-- If CapsWriter is already running and `start_server.exe` owns port `52341`, the Web console will show the ASR server as an external unmanaged service. Close that old process from an elevated Task Manager/terminal or use a different ASR port before validating the current repo's managed server.
+- VoiceType uses ASR/API/frontend ports `55341/55342/55343`. Old CapsWriter may still own `52341`, but that should no longer block this project. If `/api/status` reports conflicts on `55341`, run `stop.bat` and then `start.bat`.
 - UI-managed server/client processes should not open black console windows; their logs are under `logs/managed_server_*.log` and `logs/managed_client_*.log`.
 - Settings saved from the Web console are written to `data/app_config.json`, which is intentionally ignored by Git.

@@ -35,6 +35,8 @@ class VoiceClient:
         self._ws: Optional[Any] = None
         self._running = False
         self._recording = False
+        self._processing = False
+        self._send_queue: "asyncio.Queue[dict]" = asyncio.Queue()
         self._heartbeat_task: Optional[asyncio.Task] = None
 
     async def start(self):
@@ -48,9 +50,9 @@ class VoiceClient:
         self._running = True
 
         keyboard_task = asyncio.create_task(self._keyboard_loop())
-        ws_task = asyncio.create_task(self._recv_loop())
+        worker_task = asyncio.create_task(self._request_worker())
 
-        await asyncio.gather(keyboard_task, ws_task)
+        await asyncio.gather(keyboard_task, worker_task)
 
     async def _connect(self) -> bool:
         attempt = 0
@@ -195,28 +197,11 @@ class VoiceClient:
 
         self._notifier.recording_started()
 
-        if self._ws_is_open():
-            try:
-                task_id = str(uuid.uuid4())
-                await self._ws.send(json.dumps({
-                    "type": "audio_start",
-                    "task_id": task_id,
-                    "sample_rate": self._config.sample_rate,
-                }))
-            except Exception as e:
-                logger.error(f"Failed to send audio_start: {e}")
+        asyncio.create_task(self._drain_recording())
 
-        asyncio.create_task(self._stream_audio())
-
-    async def _stream_audio(self):
+    async def _drain_recording(self):
         while self._recording and self._recorder.is_recording:
-            chunk = self._recorder.read_chunk()
-            if chunk and self._ws_is_open():
-                try:
-                    await self._ws.send(chunk)
-                except Exception as e:
-                    logger.error(f"Failed to send audio chunk: {e}")
-                    break
+            self._recorder.read_chunk()
             await asyncio.sleep(0.02)
 
     async def _on_key_up(self):
@@ -235,15 +220,89 @@ class VoiceClient:
             audio_path = os.path.join(self._config.audio_dir, f"{timestamp}.wav")
             self._recorder.save_wav(audio_path, audio_data)
 
-        if self._ws_is_open():
+        if not audio_data:
+            self._notifier.output_failed("没有录到音频")
+            return
+
+        queued_count = self._send_queue.qsize() + (1 if self._processing else 0)
+        if queued_count:
+            self._notifier.queued(queued_count + 1)
+
+        await self._send_queue.put({
+            "task_id": str(uuid.uuid4()),
+            "audio_data": audio_data,
+            "audio_path": audio_path,
+            "sample_rate": self._config.sample_rate,
+        })
+
+    async def _request_worker(self):
+        while self._running:
+            item = await self._send_queue.get()
+            self._processing = True
+            ticker: Optional[asyncio.Task] = None
             try:
-                await self._ws.send(json.dumps({
-                    "type": "audio_end",
-                    "audio_path": audio_path,
-                    "sample_rate": self._config.sample_rate,
-                }, ensure_ascii=False))
+                self._notifier.analysis_started()
+                ticker = asyncio.create_task(self._analysis_ticker())
+                result = await self._recognize_item(item)
+                text = result.get("text", "")
+                if not text:
+                    error = result.get("error") or "识别结果为空"
+                    logger.warning(f"Recognition failed or empty: {error}")
+                    self._notifier.output_failed(error)
+                    continue
+
+                self._hotword.maybe_reload(self._config.hotword_files)
+                text = self._hotword.apply(text)
+                await type_result(text, self._config)
+
+                delay = result.get("time_complete", 0) - result.get("time_submit", 0)
+                logger.info(f"Result: {text} (delay: {delay:.2f}s)")
+                self._notifier.output_success()
             except Exception as e:
-                logger.error(f"Failed to send audio_end: {e}")
+                logger.error(f"Recognition request failed: {e}")
+                self._notifier.output_failed("识别失败")
+            finally:
+                if ticker:
+                    ticker.cancel()
+                self._processing = False
+                self._send_queue.task_done()
+
+    async def _analysis_ticker(self):
+        started = time.time()
+        while True:
+            await asyncio.sleep(1)
+            seconds = int(time.time() - started)
+            if seconds >= 3:
+                self._notifier.analysis_tick(seconds)
+
+    async def _recognize_item(self, item: dict) -> dict:
+        async with websockets.connect(
+            f"ws://{self._config.server_host}:{self._config.server_port}",
+            max_size=None,
+            ping_interval=20,
+            ping_timeout=10,
+            close_timeout=5,
+        ) as ws:
+            await ws.send(json.dumps({
+                "type": "audio_start",
+                "task_id": item["task_id"],
+                "sample_rate": item["sample_rate"],
+            }))
+            audio_data = item["audio_data"]
+            chunk_size = 32_000
+            for index in range(0, len(audio_data), chunk_size):
+                await ws.send(audio_data[index:index + chunk_size])
+            time_submit = time.time()
+            await ws.send(json.dumps({
+                "type": "audio_end",
+                "audio_path": item["audio_path"],
+                "sample_rate": item["sample_rate"],
+            }, ensure_ascii=False))
+            message = await ws.recv()
+            data = json.loads(message)
+            data.setdefault("time_submit", time_submit)
+            data.setdefault("time_complete", time.time())
+            return data
 
     async def stop(self):
         self._running = False

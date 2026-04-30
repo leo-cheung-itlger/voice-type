@@ -20,7 +20,7 @@
         <label class="row setting-row">
           <span>
             <span class="value">快捷键</span>
-            <span class="label">默认 caps_lock</span>
+            <span class="label">当前测试推荐 right shift</span>
           </span>
           <input v-model="store.config.client.shortcut_key" class="field compact" />
         </label>
@@ -56,7 +56,35 @@
     </section>
 
     <section class="section">
-      <div class="section-title"><span>模型</span></div>
+      <div class="section-title">
+        <span>硬件</span>
+        <button class="btn btn-small btn-ghost" @click="store.fetchHardware()">刷新</button>
+      </div>
+      <div class="panel">
+        <div class="row">
+          <div>
+            <div class="value">{{ store.hardware?.nvidia_gpu ? 'NVIDIA GPU 已检测' : '未检测到 NVIDIA GPU' }}</div>
+            <div class="label">{{ gpuLabel }}</div>
+          </div>
+          <span class="model-state" :class="{ ok: store.hardware?.torch.cuda_available }">
+            {{ store.hardware?.torch.cuda_available ? 'CUDA OK' : 'CPU' }}
+          </span>
+        </div>
+        <div class="row">
+          <div>
+            <div class="value">PyTorch</div>
+            <div class="label">{{ torchLabel }}</div>
+          </div>
+          <span class="label">{{ store.hardware?.memory_gb ? `${store.hardware.memory_gb}GB RAM` : '-' }}</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">
+        <span>模型</span>
+        <button class="btn btn-small btn-ghost" @click="refreshModels">刷新</button>
+      </div>
       <div class="model-list">
         <button
           v-for="model in store.models"
@@ -67,10 +95,20 @@
         >
           <span>
             <strong>{{ model.name }}</strong>
-            <small>{{ model.exists ? '已找到' : '缺失' }}</small>
+            <small>{{ modelSummary(model) }}</small>
           </span>
           <span class="model-state" :class="{ ok: model.exists }">{{ model.exists ? 'OK' : 'MISS' }}</span>
         </button>
+      </div>
+      <div class="benchmark-actions">
+        <button
+          class="btn btn-small btn-primary"
+          :disabled="benchmarking"
+          @click="benchmarkSelected"
+        >
+          {{ benchmarking ? '测试中' : '测试当前模型' }}
+        </button>
+        <span class="label">{{ benchmarkHint }}</span>
       </div>
     </section>
 
@@ -91,19 +129,67 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
-import { useAppStore } from '../stores/app'
+import { computed, onMounted, ref } from 'vue'
+import { type ModelEntry, useAppStore } from '../stores/app'
 
 const store = useAppStore()
+const benchmarking = ref(false)
+
+const gpuLabel = computed(() => {
+  const gpus = store.hardware?.gpus || []
+  if (!gpus.length) return store.hardware?.recommendation || '等待检测'
+  return gpus.map((gpu) => gpu.memory_total_mb ? `${gpu.name} ${Math.round(gpu.memory_total_mb / 1024)}GB` : gpu.name).join(' / ')
+})
+
+const torchLabel = computed(() => {
+  const torch = store.hardware?.torch
+  if (!torch) return '等待检测'
+  if (!torch.available) return torch.error || '不可用'
+  return `${torch.version}${torch.cuda_available ? ` · CUDA ${torch.cuda_version || ''}` : ' · CUDA 不可用'}`
+})
+
+const benchmarkHint = computed(() => {
+  const model = store.config.server.model
+  const result = store.benchmarks[model]
+  if (!result) return '用于判断 0.6B/1.7B 在本机的真实耗时'
+  if (!result.exists) return '模型未安装'
+  if (!result.ok) return result.error || '测试失败'
+  return `最近耗时 ${Number(result.recognition_seconds || 0).toFixed(2)}s`
+})
 
 async function save() {
   await store.saveConfig()
   await Promise.all([store.fetchStatus(), store.fetchModels()])
 }
 
+function modelSummary(model: ModelEntry) {
+  const parts = [model.exists ? '已安装' : '未安装', model.backend || 'unknown']
+  if (model.role === 'daily') parts.push('日用候选')
+  if (model.role === 'quality') parts.push('高质量')
+  const bench = model.benchmark || store.benchmarks[model.id]
+  if (bench?.ok) parts.push(`${Number(bench.recognition_seconds || 0).toFixed(2)}s`)
+  if (bench && !bench.ok && bench.error) parts.push('测试失败')
+  return parts.join(' · ')
+}
+
+async function refreshModels() {
+  await Promise.all([store.fetchModels(), store.fetchBenchmarks(), store.fetchHardware()])
+}
+
+async function benchmarkSelected() {
+  benchmarking.value = true
+  try {
+    await store.runBenchmark(store.config.server.model)
+  } finally {
+    benchmarking.value = false
+  }
+}
+
 onMounted(() => {
   store.fetchConfig()
   store.fetchModels()
+  store.fetchHardware()
+  store.fetchBenchmarks()
   store.fetchLogs()
 })
 </script>
@@ -165,6 +251,13 @@ input[type="checkbox"] {
 
 .model-state.ok {
   color: var(--accent);
+}
+
+.benchmark-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .logs {

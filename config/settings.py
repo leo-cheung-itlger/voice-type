@@ -4,6 +4,11 @@ import json
 import os
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_ASR_PORT = 55341
+DEFAULT_API_PORT = 55342
+DEFAULT_FRONTEND_PORT = 55343
+LEGACY_ASR_PORT = 52341
+LEGACY_API_PORT = 52342
 DEFAULT_MODELS_DIR = os.path.join(os.path.dirname(BASE_DIR), "models")
 LEGACY_MODELS_DIR = r"C:\Program Files\CapsWriter-Offline-Windows-64bit\models"
 MODELS_DIR = os.environ.get("VOICETYPE_MODELS_DIR", DEFAULT_MODELS_DIR)
@@ -49,7 +54,7 @@ def resolve_model_dir(model: str) -> str:
 @dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
-    port: int = 52341
+    port: int = DEFAULT_ASR_PORT
     model: Literal["qwen3-asr-0.6b", "qwen3-asr-1.7b", "funasr-nano", "sensevoice", "paraformer"] = "qwen3-asr-1.7b"
     model_dir: str = ""
     gpu: bool = True
@@ -66,7 +71,7 @@ class ServerConfig:
 @dataclass
 class ClientConfig:
     server_host: str = "127.0.0.1"
-    server_port: int = 52341
+    server_port: int = DEFAULT_ASR_PORT
     shortcut_key: str = "caps_lock"
     mouse_button: int = 2
     sample_rate: int = 48000
@@ -97,7 +102,7 @@ class ClientConfig:
 @dataclass
 class APIConfig:
     host: str = "127.0.0.1"
-    port: int = 52342
+    port: int = DEFAULT_API_PORT
     cors_origins: list = field(default_factory=lambda: ["*"])
 
 
@@ -144,7 +149,17 @@ def load_app_config(filepath: str = APP_CONFIG_FILE) -> AppConfig:
     _merge_dataclass(config.server, data.get("server", {}))
     _merge_dataclass(config.client, data.get("client", {}))
     _merge_dataclass(config.api, data.get("api", {}))
+    _migrate_legacy_ports(config)
     return config
+
+
+def _migrate_legacy_ports(config: AppConfig):
+    if config.server.port == LEGACY_ASR_PORT:
+        config.server.port = DEFAULT_ASR_PORT
+    if config.client.server_port == LEGACY_ASR_PORT:
+        config.client.server_port = DEFAULT_ASR_PORT
+    if config.api.port == LEGACY_API_PORT:
+        config.api.port = DEFAULT_API_PORT
 
 
 def save_app_config(config: AppConfig, filepath: str = APP_CONFIG_FILE):

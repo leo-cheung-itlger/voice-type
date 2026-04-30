@@ -36,7 +36,7 @@
         <div class="row">
           <div>
             <div class="value">录音客户端</div>
-            <div class="label">{{ store.clientRunning ? `PID ${store.clientPid || '-'}` : store.config.client.shortcut_key }}</div>
+            <div class="label">{{ clientLabel }}</div>
           </div>
           <button class="btn btn-small" :class="store.clientRunning ? 'btn-danger' : 'btn-primary'" @click="toggleClient">
             {{ store.clientRunning ? '停止' : '启动' }}
@@ -97,11 +97,18 @@ import { useAppStore } from '../stores/app'
 const store = useAppStore()
 const recentEntries = computed(() => [...store.history].slice(-4).reverse())
 const serverLabel = computed(() => {
+  if (store.serverConflict) return `发现 ${store.serverProcessCount} 个实例或端口冲突`
   if (store.serverRunning && store.serverManaged) return `托管运行 PID ${store.serverPid || '-'}`
   if (store.serverRunning && !store.serverManaged) return `外部服务占用端口 ${store.config.server.port}`
   return '等待启动'
 })
+const clientLabel = computed(() => {
+  if (store.clientConflict) return `发现 ${store.clientProcessCount} 个客户端实例`
+  if (store.clientRunning) return `PID ${store.clientPid || '-'} · ${store.config.client.shortcut_key}`
+  return store.config.client.shortcut_key
+})
 const serverButtonLabel = computed(() => {
+  if (store.serverConflict) return '冲突'
   if (store.serverRunning && store.serverManaged) return '停止'
   if (store.serverRunning && !store.serverManaged) return '外部'
   return '启动'

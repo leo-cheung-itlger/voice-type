@@ -46,6 +46,7 @@ onMounted(async () => {
     store.fetchHistory(),
     store.fetchStats(),
     store.fetchModels(),
+    store.fetchHardware(),
   ])
   store.connectRecognition()
   timer = setInterval(() => {

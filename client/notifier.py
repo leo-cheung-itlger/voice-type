@@ -24,6 +24,21 @@ class RecordingNotifier:
         self._beep(start=False)
         self._send("finish")
 
+    def analysis_started(self):
+        self._send("analysis")
+
+    def analysis_tick(self, seconds: int):
+        self._send(f"analysis:{seconds}")
+
+    def queued(self, count: int):
+        self._send(f"queued:{count}")
+
+    def output_success(self):
+        self._send("success")
+
+    def output_failed(self, message: str = ""):
+        self._send(f"failed:{message[:40]}")
+
     def shutdown(self):
         self._send("quit")
 
@@ -113,7 +128,22 @@ class RecordingNotifier:
                         if event == "start":
                             show("VoiceType 正在录音", "#14532d")
                         elif event == "finish":
-                            show("录音已发送", "#1f2937")
+                            show("录音已保存", "#1f2937")
+                            hide_later()
+                        elif event == "analysis":
+                            show("正在分析音频", "#1d4ed8")
+                        elif event.startswith("analysis:"):
+                            seconds = event.split(":", 1)[1]
+                            show(f"正在分析 {seconds}s", "#1d4ed8")
+                        elif event.startswith("queued:"):
+                            count = event.split(":", 1)[1]
+                            show(f"录音已排队（{count}）", "#78350f")
+                        elif event == "success":
+                            show("识别已输出", "#14532d")
+                            hide_later()
+                        elif event.startswith("failed:"):
+                            message = event.split(":", 1)[1] or "识别失败"
+                            show(message, "#7f1d1d")
                             hide_later()
                         elif event == "quit":
                             root.destroy()

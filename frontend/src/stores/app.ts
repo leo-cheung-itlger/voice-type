@@ -38,6 +38,11 @@ export interface AppConfig {
     notification_enabled: boolean
     notification_sound: boolean
   }
+  api?: {
+    host: string
+    port: number
+    frontend_port: number
+  }
 }
 
 export interface ModelEntry {
@@ -45,6 +50,37 @@ export interface ModelEntry {
   name: string
   path: string
   exists: boolean
+  backend?: string
+  role?: string
+  benchmark?: ModelBenchmark | null
+}
+
+export interface ModelBenchmark {
+  model: string
+  exists: boolean
+  ok: boolean
+  loading_seconds?: number
+  recognition_seconds?: number
+  total_seconds?: number
+  text?: string
+  cuda_available?: boolean
+  error?: string
+  updated_at?: number
+}
+
+export interface HardwareInfo {
+  cpu: string
+  memory_gb: number | null
+  nvidia_gpu: boolean
+  gpus: { name: string; memory_total_mb?: number; driver_version?: string }[]
+  torch: {
+    available: boolean
+    version: string
+    cuda_available: boolean
+    cuda_version: string | null
+    error: string
+  }
+  recommendation: string
 }
 
 export interface FfmpegStatus {
@@ -91,7 +127,7 @@ const API_BASE = '/api'
 const defaultConfig: AppConfig = {
   server: {
     host: '0.0.0.0',
-    port: 52341,
+    port: 55341,
     model: 'qwen3-asr-1.7b',
     model_dir: '',
     gpu: true,
@@ -99,7 +135,7 @@ const defaultConfig: AppConfig = {
   },
   client: {
     server_host: '127.0.0.1',
-    server_port: 52341,
+    server_port: 55341,
     shortcut_key: 'caps_lock',
     output_mode: 'clipboard',
     save_audio: true,
@@ -107,6 +143,11 @@ const defaultConfig: AppConfig = {
     hotword_files: ['hot-zh.txt', 'hot-en.txt', 'hot-rule.txt'],
     notification_enabled: true,
     notification_sound: true,
+  },
+  api: {
+    host: '127.0.0.1',
+    port: 55342,
+    frontend_port: 55343,
   },
 }
 
@@ -118,6 +159,10 @@ export const useAppStore = defineStore('app', () => {
   const serverManaged = ref(false)
   const clientManaged = ref(false)
   const serverPortOpen = ref(false)
+  const serverConflict = ref(false)
+  const clientConflict = ref(false)
+  const serverProcessCount = ref(0)
+  const clientProcessCount = ref(0)
   const history = ref<HistoryEntry[]>([])
   const errorMarks = ref<ErrorMark[]>([])
   const wsConnected = ref(false)
@@ -125,6 +170,8 @@ export const useAppStore = defineStore('app', () => {
   const topWords = ref<{ word: string; count: number }[]>([])
   const config = ref<AppConfig>(structuredClone(defaultConfig))
   const models = ref<ModelEntry[]>([])
+  const hardware = ref<HardwareInfo | null>(null)
+  const benchmarks = ref<Record<string, ModelBenchmark>>({})
   const logs = ref<{ file: string; line: string }[]>([])
   const recentIssues = ref<{ file: string; line: string }[]>([])
   const hotwordContent = ref<Record<string, string>>({})
@@ -185,9 +232,17 @@ export const useAppStore = defineStore('app', () => {
       serverManaged.value = Boolean(data.server.managed)
       clientManaged.value = Boolean(data.client.managed)
       serverPortOpen.value = Boolean(data.server.port_open)
+      serverConflict.value = Boolean(data.server.conflict)
+      clientConflict.value = Boolean(data.client.conflict)
+      serverProcessCount.value = Number(data.server.process_count || 0)
+      clientProcessCount.value = Number(data.client.process_count || 0)
     } else {
       serverRunning.value = false
       clientRunning.value = false
+      serverConflict.value = false
+      clientConflict.value = false
+      serverProcessCount.value = 0
+      clientProcessCount.value = 0
     }
   }
 
@@ -217,6 +272,26 @@ export const useAppStore = defineStore('app', () => {
   async function fetchModels() {
     const data = await apiFetch<any>('/models')
     if (data) models.value = data.models || []
+  }
+
+  async function fetchHardware() {
+    const data = await apiFetch<HardwareInfo>('/hardware')
+    if (data) hardware.value = data
+  }
+
+  async function fetchBenchmarks() {
+    const data = await apiFetch<{ benchmarks: Record<string, ModelBenchmark> }>('/models/benchmark')
+    if (data) benchmarks.value = data.benchmarks || {}
+  }
+
+  async function runBenchmark(model: string) {
+    const data = await apiFetch<ModelBenchmark>('/models/benchmark', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    })
+    await Promise.all([fetchBenchmarks(), fetchModels()])
+    return data
   }
 
   async function selectModel(model: string) {
@@ -433,11 +508,12 @@ export const useAppStore = defineStore('app', () => {
 
   return {
     serverRunning, clientRunning, serverPid, clientPid, serverManaged, clientManaged,
-    serverPortOpen, history, errorMarks, wsConnected, currentPartial, topWords,
+    serverPortOpen, serverConflict, clientConflict, serverProcessCount, clientProcessCount,
+    history, errorMarks, wsConnected, currentPartial, topWords,
     config, models, logs, recentIssues, hotwordContent, selectedHotword,
-    ffmpeg, llmConfig, transcriptions, lastError,
+    ffmpeg, llmConfig, transcriptions, hardware, benchmarks, lastError,
     latestEntry, totalEntries, avgDelay, serviceLabel,
-    fetchStatus, fetchHealth, fetchConfig, saveConfig, fetchModels, selectModel,
+    fetchStatus, fetchHealth, fetchConfig, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, selectModel,
     startServer, stopServer, startClient, stopClient, startAll, stopAll,
     fetchHistory, clearHistory, deleteHistoryEntry, addErrorMark, fetchErrorMarks,
     fetchStats, fetchLogs, fetchHotword, saveHotword,

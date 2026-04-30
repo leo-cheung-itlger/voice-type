@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-04-30
+
+- Moved VoiceType runtime ports to `55341/55342/55343` to avoid CapsWriter `52341` collisions, with legacy saved `52341/52342` config values migrated at load time.
+- Reworked `start.bat` / `stop.bat` and the PowerShell helpers so they clean project-owned duplicate processes, use the project `venv`, and start/stop API, frontend, ASR server, and recording client together.
+- Added API process conflict detection for managed server/client status, hardware/CUDA reporting, and Qwen model benchmark endpoints.
+- Added Settings UI hardware/model benchmark display and updated the client notification flow to show recording, analyzing with elapsed time, queued recordings, success, and failure states.
+- Validation: Python compile passed; frontend typecheck and production build passed; `stop.bat` released `55341/55342/55343`; `start.bat` started API/frontend/ASR/client; `/api/status` reports managed server/client with no conflict; `/api/hardware` detects RTX 5070 Ti with CPU-only PyTorch; `/api/ffmpeg/status` remains available; model benchmark reports missing `Qwen3-ASR-0.6B` and `Qwen3-ASR-1.7B` at about 17.87s load plus 20.65s inference on the fixed mp3 sample; service fixture smoke passed through `55341`; browser Settings page at `55343` has no console errors.
+
 ## 2026-04-29
 
 - Added project-local ffmpeg fallback detection at `tools/ffmpeg/bin`, with `tools/ffmpeg/` ignored by Git for local binary installs.
