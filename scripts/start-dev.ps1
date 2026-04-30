@@ -56,10 +56,10 @@ if (Test-Path (Join-Path $frontendPath "node_modules")) {
     Write-Warning "frontend\node_modules is missing. Run: cd frontend && npm install"
 }
 
-$startAll = Invoke-RestMethod -Uri "$apiUrl/api/start-all" -Method Post -TimeoutSec 20
+$startAll = Invoke-RestMethod -Uri "$apiUrl/api/start-all" -Method Post -TimeoutSec 60
 
 $asrReady = $false
-for ($i = 0; $i -lt 180; $i++) {
+for ($i = 0; $i -lt 300; $i++) {
     Start-Sleep -Seconds 1
     $listener = Get-NetTCPConnection -LocalPort 55341 -State Listen -ErrorAction SilentlyContinue
     if ($listener) {
@@ -69,7 +69,7 @@ for ($i = 0; $i -lt 180; $i++) {
 }
 
 if (-not $asrReady) {
-    Write-Warning "ASR server has not opened port 55341 yet. It may still be loading the model; see logs\managed_server_*.log."
+    throw "ASR server did not open port 55341 within 300 seconds. See logs\managed_server_*.log and logs\asr_engine_*.log."
 }
 
 Write-Host "VoiceType API: $apiUrl"

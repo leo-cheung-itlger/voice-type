@@ -65,6 +65,7 @@ history = HistoryManager()
 transcriptions = TranscriptionManager()
 server_process: Optional[subprocess.Popen] = None
 client_process: Optional[subprocess.Popen] = None
+_PROCESS_CACHE = {"time": 0.0, "rows": []}
 
 
 class ErrorMarkRequest(BaseModel):
@@ -85,7 +86,10 @@ class ModelSelectRequest(BaseModel):
 
 class ModelBenchmarkRequest(BaseModel):
     model: Optional[str] = None
+    models: Optional[list[str]] = None
     audio_file: Optional[str] = None
+    all: bool = False
+    acceleration: Optional[str] = None
 
 
 class TranscriptionCreateRequest(BaseModel):
@@ -119,6 +123,14 @@ class ProcessManager:
     @staticmethod
     def _port_open(host: str, port: int, timeout: float = 0.3) -> bool:
         try:
+            import psutil
+            for conn in psutil.net_connections(kind="inet"):
+                if conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == port:
+                    return True
+            return False
+        except Exception:
+            pass
+        try:
             with socket.create_connection((host, port), timeout=timeout):
                 return True
         except OSError:
@@ -135,6 +147,8 @@ class ProcessManager:
         if config.model_dir:
             args.append(f"--model-dir={config.model_dir}")
         args.append("--gpu" if config.gpu else "--no-gpu")
+        args.append("--gpu-required" if config.gpu_required else "--no-gpu-required")
+        args.append("--allow-cpu-fallback" if config.allow_cpu_fallback else "--no-allow-cpu-fallback")
         return args
 
     @staticmethod
@@ -169,6 +183,9 @@ class ProcessManager:
 
     @staticmethod
     def _project_processes() -> list[dict]:
+        now = time.time()
+        if now - _PROCESS_CACHE["time"] < 1.5:
+            return list(_PROCESS_CACHE["rows"])
         if sys.platform != "win32":
             return []
         script = """
@@ -222,6 +239,8 @@ $items | ConvertTo-Json -Compress
                 "command": command,
                 "project_venv": os.path.join(BASE_DIR, "venv").lower() in command.lower(),
             })
+        _PROCESS_CACHE["time"] = time.time()
+        _PROCESS_CACHE["rows"] = rows
         return rows
 
     @staticmethod
@@ -426,19 +445,32 @@ def _line_is_recent_issue(line: str) -> bool:
 def _model_entries() -> list:
     entries = []
     benchmark = _load_model_benchmark()
+    diagnostics = _runtime_diagnostics()
+    recommendation = _build_recommendation(benchmark, diagnostics)
     for model, dirname in MODEL_DIR_NAMES.items():
         path = resolve_model_dir(model)
         exists = os.path.isdir(path)
-        backend = "qwen-asr" if model.startswith("qwen3-asr") else "sherpa-onnx"
-        role = "daily" if model == "qwen3-asr-0.6b" else "quality" if model == "qwen3-asr-1.7b" else "fast"
+        backend = _expected_model_backend(model)
+        role = "daily" if model in ("qwen3-asr-0.6b", "qwen3-asr-1.7b-gguf-vulkan") else "quality" if model == "qwen3-asr-1.7b" else "fast"
+        model_benchmarks = {
+            key: value for key, value in benchmark.items()
+            if key == model or key.startswith(f"{model}::")
+        }
+        blocking_reason = _model_blocking_reason(model, exists, diagnostics)
         entries.append({
             "id": model,
             "name": dirname,
             "path": path,
             "exists": exists,
+            "installed": exists,
             "backend": backend,
             "role": role,
+            "acceleration": _default_acceleration_for_model(model),
+            "gpu_required_supported": not bool(blocking_reason),
+            "blocking_reason": blocking_reason,
+            "recommended_for": recommendation.get("recommended_for", {}).get(model, []),
             "benchmark": _normalize_benchmark(benchmark[model]) if model in benchmark else None,
+            "benchmarks": model_benchmarks,
         })
     return entries
 
@@ -462,6 +494,119 @@ def _save_model_benchmark(data: dict):
     os.makedirs(os.path.dirname(_benchmark_path()), exist_ok=True)
     with open(_benchmark_path(), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _expected_model_backend(model: str) -> str:
+    if model == "qwen3-asr-1.7b-gguf-vulkan":
+        return "gguf-vulkan"
+    if model in ("qwen3-asr-0.6b", "qwen3-asr-1.7b"):
+        return "qwen-asr"
+    return "sherpa-onnx"
+
+
+def _default_acceleration_for_model(model: str) -> str:
+    if model == "qwen3-asr-1.7b-gguf-vulkan":
+        return "gguf-vulkan"
+    if model in ("qwen3-asr-0.6b", "qwen3-asr-1.7b"):
+        return "pytorch-cuda"
+    return "sherpa-onnx-cpu"
+
+
+def _vulkan_status() -> dict:
+    gguf_dir = resolve_model_dir("qwen3-asr-1.7b-gguf-vulkan")
+    gguf_files = list(Path(gguf_dir).glob("*.gguf")) if os.path.isdir(gguf_dir) else []
+    return {
+        "available": bool(gguf_files),
+        "model_dir": gguf_dir,
+        "gguf_files": [str(path) for path in gguf_files],
+        "error": "" if gguf_files else "Qwen3-ASR GGUF/Vulkan model/runtime is not installed",
+    }
+
+
+def _runtime_diagnostics() -> dict:
+    torch = _torch_status()
+    nvidia = _nvidia_status()
+    vulkan = _vulkan_status()
+    config = load_app_config().server
+    blockers = []
+    if config.gpu_required:
+        if config.model in ("qwen3-asr-0.6b", "qwen3-asr-1.7b") and not torch.get("cuda_available"):
+            blockers.append("pytorch_cuda_unavailable")
+        if config.model == "qwen3-asr-1.7b-gguf-vulkan" and not vulkan.get("available"):
+            blockers.append("vulkan_backend_missing")
+    return {
+        "gpu_required": config.gpu_required,
+        "allow_cpu_fallback": config.allow_cpu_fallback,
+        "selected_model": config.model,
+        "torch": torch,
+        "nvidia": nvidia,
+        "vulkan": vulkan,
+        "blockers": blockers,
+        "runtime_ready": not blockers,
+    }
+
+
+def _model_blocking_reason(model: str, exists: bool, diagnostics: dict) -> str:
+    if not exists:
+        return "model_missing"
+    if model == "qwen3-asr-1.7b-gguf-vulkan":
+        return "" if diagnostics["vulkan"].get("available") else "vulkan_backend_missing"
+    if model in ("qwen3-asr-0.6b", "qwen3-asr-1.7b"):
+        return "" if diagnostics["torch"].get("cuda_available") else "pytorch_cuda_unavailable"
+    config = load_app_config().server
+    if config.gpu_required and not config.allow_cpu_fallback:
+        return "cpu_only_model_blocked_by_gpu_required"
+    return ""
+
+
+def _build_recommendation(benchmark: dict, diagnostics: dict) -> dict:
+    recommended_for: dict[str, list[str]] = {}
+    realtime_candidates = []
+    quality_candidates = []
+    for key, result in benchmark.items():
+        normalized = _normalize_benchmark(result)
+        model = normalized.get("model", key.split("::", 1)[0])
+        if not normalized.get("ok") or not normalized.get("actual_gpu"):
+            continue
+        seconds = float(normalized.get("inference_seconds") or normalized.get("recognition_seconds") or 9999)
+        realtime_candidates.append((seconds, model, key))
+        if model.startswith("qwen3-asr"):
+            quality_candidates.append((seconds, model, key))
+
+    realtime = min(realtime_candidates, default=None)
+    quality = min(quality_candidates, default=None)
+    if realtime:
+        recommended_for.setdefault(realtime[1], []).append("realtime")
+    if quality:
+        recommended_for.setdefault(quality[1], []).append("quality")
+    return {
+        "status": "ok" if realtime else "blocked",
+        "realtime_model": realtime[1] if realtime else "",
+        "quality_model": quality[1] if quality else "",
+        "recommended_for": recommended_for,
+        "reason": "GPU benchmark result found" if realtime else "No installed model has a successful GPU benchmark yet",
+        "diagnostics": diagnostics,
+    }
+
+
+def _benchmark_acceleration(model: str, gpu: bool, gpu_backend: str) -> str:
+    if not gpu:
+        return "cpu"
+    if model == "qwen3-asr-1.7b-gguf-vulkan":
+        return "gguf-vulkan"
+    if model in ("qwen3-asr-0.6b", "qwen3-asr-1.7b"):
+        return "pytorch-cuda"
+    if gpu_backend in ("vulkan", "dml", "cuda"):
+        return f"sherpa-onnx-{gpu_backend}"
+    return "sherpa-onnx-cpu"
+
+
+def _actual_gpu_used(status: str, acceleration: str, torch_status: dict) -> bool:
+    if status != "ok":
+        return False
+    if acceleration in {"cuda", "pytorch-cuda"}:
+        return bool(torch_status.get("cuda_available"))
+    return acceleration in {"vulkan", "dml", "gguf-vulkan", "sherpa-onnx-vulkan", "sherpa-onnx-dml", "sherpa-onnx-cuda"}
 
 
 def _torch_status() -> dict:
@@ -524,17 +669,54 @@ def _memory_gb() -> float | None:
 
 def _normalize_benchmark(result: dict) -> dict:
     status = result.get("status", "")
+    load_seconds = result.get("load_seconds")
+    inference_seconds = result.get("inference_seconds", result.get("infer_seconds"))
+    load_value = float(load_seconds or 0)
+    inference_value = float(inference_seconds or 0)
+    torch_status = result.get("torch") or {}
+    acceleration = result.get("acceleration") or ""
+    actual_gpu = bool(result.get("actual_gpu", _actual_gpu_used(status, acceleration, torch_status)))
     return {
         **result,
         "exists": status != "missing",
         "ok": status == "ok",
         "loading_seconds": result.get("load_seconds"),
-        "recognition_seconds": result.get("infer_seconds"),
-        "total_seconds": round(float(result.get("load_seconds", 0) or 0) + float(result.get("infer_seconds", 0) or 0), 2),
-        "cuda_available": (result.get("torch") or {}).get("cuda_available", False),
+        "inference_seconds": inference_seconds,
+        "infer_seconds": inference_seconds,
+        "recognition_seconds": inference_seconds,
+        "total": round(load_value + inference_value, 2),
+        "total_seconds": round(load_value + inference_value, 2),
+        "cuda_available": torch_status.get("cuda_available", False),
+        "actual_gpu": actual_gpu,
+        "text": result.get("text", ""),
         "updated_at": result.get("timestamp"),
         "error": result.get("error") or (status if status and status != "ok" else ""),
     }
+
+
+def _save_benchmark_result(result: dict) -> dict:
+    result = _normalize_benchmark(result)
+    benchmark = _load_model_benchmark()
+    key = result.get("benchmark_id") or f"{result['model']}::{result.get('acceleration') or 'default'}"
+    benchmark[key] = result
+    existing = benchmark.get(result["model"])
+    if not existing or _benchmark_rank(result) >= _benchmark_rank(existing):
+        benchmark[result["model"]] = result
+    _save_model_benchmark(benchmark)
+    return result
+
+
+def _benchmark_rank(result: dict) -> tuple:
+    normalized = _normalize_benchmark(result)
+    seconds = float(normalized.get("recognition_seconds") or normalized.get("inference_seconds") or 9999)
+    status_rank = 0
+    if normalized.get("ok") and normalized.get("actual_gpu"):
+        status_rank = 4
+    elif normalized.get("ok"):
+        status_rank = 3
+    elif normalized.get("exists"):
+        status_rank = 2
+    return (status_rank, -seconds, float(normalized.get("updated_at") or 0))
 
 
 def _hotword_path(name: str) -> str:
@@ -557,6 +739,7 @@ async def get_health():
     server = ProcessManager.check_server_health()
     client = ProcessManager.check_client_health()
     selected_model = next((m for m in _model_entries() if m["id"] == config.server.model), None)
+    diagnostics = _runtime_diagnostics()
     log_files = sorted(glob.glob(os.path.join(LOGS_DIR, "*.log")), key=os.path.getmtime) if os.path.isdir(LOGS_DIR) else []
     recent_lines = []
     for path in log_files[-5:]:
@@ -564,10 +747,11 @@ async def get_health():
             if _line_is_recent_issue(line):
                 recent_lines.append({"file": os.path.basename(path), "line": line.strip()})
     return {
-        "ok": server["running"] or client["running"],
+        "ok": (server["running"] or client["running"]) and diagnostics["runtime_ready"],
         "server": server,
         "client": client,
         "model": selected_model,
+        "diagnostics": diagnostics,
         "config_file": APP_CONFIG_FILE,
         "recent_issues": recent_lines[-30:],
     }
@@ -598,10 +782,16 @@ async def get_models():
     }
 
 
+@app.get("/api/runtime/diagnostics")
+async def get_runtime_diagnostics():
+    return _runtime_diagnostics()
+
+
 @app.get("/api/hardware")
 async def get_hardware():
-    torch = _torch_status()
-    nvidia = _nvidia_status()
+    diagnostics = _runtime_diagnostics()
+    torch = diagnostics["torch"]
+    nvidia = diagnostics["nvidia"]
     recommendation = "检测到 NVIDIA GPU，但当前 PyTorch CUDA 不可用；Qwen safetensors 会走 CPU，延迟会明显偏高。"
     if torch["cuda_available"]:
         recommendation = "PyTorch CUDA 可用，可以继续测试 Qwen CUDA 推理耗时。"
@@ -614,6 +804,11 @@ async def get_hardware():
         "gpus": nvidia.get("gpus", []),
         "torch": torch,
         "nvidia": nvidia,
+        "vulkan": diagnostics["vulkan"],
+        "gpu_required": diagnostics["gpu_required"],
+        "allow_cpu_fallback": diagnostics["allow_cpu_fallback"],
+        "blockers": diagnostics["blockers"],
+        "runtime_ready": diagnostics["runtime_ready"],
         "recommendation": recommendation,
         "ports": {
             "asr": DEFAULT_ASR_PORT,
@@ -654,61 +849,156 @@ def _decode_audio_for_benchmark(path: str) -> tuple[bytes, int]:
     return audio, sample_rate
 
 
-def _run_model_benchmark(model: str, audio_file: str) -> dict:
+def _run_model_benchmark(model: str, audio_file: str, persist: bool = True, acceleration: Optional[str] = None) -> dict:
     model_dir = resolve_model_dir(model)
-    if not os.path.isdir(model_dir):
-        result = {
-            "model": model,
-            "status": "missing",
-            "model_dir": model_dir,
-            "audio_file": audio_file,
-            "timestamp": time.time(),
-        }
-        return _normalize_benchmark(result)
-    if not audio_file or not os.path.exists(audio_file):
-        result = {
-            "model": model,
-            "status": "missing_audio",
-            "model_dir": model_dir,
-            "audio_file": audio_file,
-            "timestamp": time.time(),
-        }
-        return _normalize_benchmark(result)
-
     config = load_app_config().server
-    started = time.time()
-    engine = ASREngine(model=model, model_dir=model_dir, gpu=config.gpu, gpu_backend=config.gpu_backend)
-    if not engine.initialize():
-        result = {
-            "model": model,
-            "status": "init_failed",
-            "model_dir": model_dir,
-            "audio_file": audio_file,
-            "timestamp": time.time(),
-        }
-        return _normalize_benchmark(result)
-    load_seconds = time.time() - started
-    audio, sample_rate = _decode_audio_for_benchmark(audio_file)
-    infer_started = time.time()
-    text = engine.recognize(audio, sample_rate=sample_rate) or ""
-    infer_seconds = time.time() - infer_started
-    result = {
+    acceleration = acceleration or _benchmark_acceleration(model, config.gpu, config.gpu_backend)
+    bench_gpu = acceleration not in ("cpu", "pytorch-cpu", "sherpa-onnx-cpu")
+    bench_backend = config.gpu_backend
+    if acceleration in ("gguf-vulkan", "sherpa-onnx-vulkan"):
+        bench_backend = "vulkan"
+    elif acceleration == "sherpa-onnx-dml":
+        bench_backend = "dml"
+    elif acceleration in ("pytorch-cuda", "sherpa-onnx-cuda"):
+        bench_backend = "cuda"
+    bench_gpu_required = bench_gpu and not config.allow_cpu_fallback
+    torch_status = _torch_status()
+    base_result = {
+        "benchmark_id": f"{model}::{acceleration}",
         "model": model,
-        "status": "ok" if text else "empty",
+        "backend": _expected_model_backend(model),
+        "acceleration": acceleration,
+        "actual_gpu": False,
         "model_dir": model_dir,
         "audio_file": audio_file,
-        "backend": engine.backend,
-        "load_seconds": round(load_seconds, 2),
-        "infer_seconds": round(infer_seconds, 2),
-        "text": text,
-        "torch": _torch_status(),
+        "load_seconds": None,
+        "inference_seconds": None,
+        "text": "",
+        "torch": torch_status,
         "timestamp": time.time(),
     }
-    result = _normalize_benchmark(result)
-    benchmark = _load_model_benchmark()
-    benchmark[model] = result
-    _save_model_benchmark(benchmark)
-    return result
+    if not os.path.isdir(model_dir):
+        result = {
+            **base_result,
+            "status": "missing",
+            "error": "model directory is not installed",
+        }
+        return _save_benchmark_result(result) if persist else _normalize_benchmark(result)
+    if not audio_file or not os.path.exists(audio_file):
+        result = {
+            **base_result,
+            "status": "missing_audio",
+            "error": "benchmark audio file is not available",
+        }
+        return _save_benchmark_result(result) if persist else _normalize_benchmark(result)
+
+    started = time.time()
+    engine = ASREngine(
+        model=model,
+        model_dir=model_dir,
+        gpu=bench_gpu,
+        gpu_backend=bench_backend,
+        gpu_required=bench_gpu_required,
+        allow_cpu_fallback=config.allow_cpu_fallback,
+    )
+    if not engine.initialize():
+        result = {
+            **base_result,
+            "status": "init_failed",
+            "load_seconds": round(time.time() - started, 2),
+            "timestamp": time.time(),
+            "error": engine.last_error or "ASR engine initialization failed",
+        }
+        return _save_benchmark_result(result) if persist else _normalize_benchmark(result)
+    load_seconds = time.time() - started
+
+    try:
+        audio, sample_rate = _decode_audio_for_benchmark(audio_file)
+    except Exception as exc:
+        result = {
+            **base_result,
+            "status": "decode_failed",
+            "backend": engine.backend or base_result["backend"],
+            "load_seconds": round(load_seconds, 2),
+            "timestamp": time.time(),
+            "error": str(exc),
+        }
+        return _save_benchmark_result(result) if persist else _normalize_benchmark(result)
+
+    infer_started = time.time()
+    try:
+        text = engine.recognize(audio, sample_rate=sample_rate) or ""
+    except Exception as exc:
+        result = {
+            **base_result,
+            "status": "infer_failed",
+            "backend": engine.backend or base_result["backend"],
+            "load_seconds": round(load_seconds, 2),
+            "inference_seconds": round(time.time() - infer_started, 2),
+            "timestamp": time.time(),
+            "error": str(exc),
+        }
+        return _save_benchmark_result(result) if persist else _normalize_benchmark(result)
+    infer_seconds = time.time() - infer_started
+    status = "ok" if text else "empty"
+    torch_status = _torch_status()
+    result = {
+        **base_result,
+        "status": status,
+        "backend": engine.backend,
+        "acceleration": engine.acceleration or acceleration,
+        "load_seconds": round(load_seconds, 2),
+        "inference_seconds": round(infer_seconds, 2),
+        "text": text,
+        "torch": torch_status,
+        "actual_gpu": engine.using_gpu,
+        "timestamp": time.time(),
+    }
+    return _save_benchmark_result(result) if persist else _normalize_benchmark(result)
+
+
+def _benchmark_models(models: Optional[list[str]] = None, audio_file: Optional[str] = None) -> dict:
+    selected_models = models or list(MODEL_DIR_NAMES.keys())
+    benchmark_audio = audio_file or _default_benchmark_audio()
+    results = []
+    for model in selected_models:
+        if model not in MODEL_DIR_NAMES:
+            result = {
+                "model": model,
+                "backend": "",
+                "acceleration": "",
+                "actual_gpu": False,
+                "model_dir": "",
+                "audio_file": benchmark_audio,
+                "load_seconds": None,
+                "inference_seconds": None,
+                "text": "",
+                "torch": _torch_status(),
+                "status": "unknown_model",
+                "timestamp": time.time(),
+                "error": "model is not configured",
+            }
+            results.append(_save_benchmark_result(result))
+            continue
+        for acceleration in _benchmark_plan_for_model(model):
+            results.append(_run_model_benchmark(model, benchmark_audio, acceleration=acceleration))
+    return {
+        "audio_file": benchmark_audio,
+        "benchmark_file": _benchmark_path(),
+        "results": results,
+    }
+
+
+def _benchmark_plan_for_model(model: str) -> list[str]:
+    if model in ("qwen3-asr-0.6b", "qwen3-asr-1.7b"):
+        return ["pytorch-cpu", "pytorch-cuda"]
+    if model == "qwen3-asr-1.7b-gguf-vulkan":
+        return ["gguf-vulkan"]
+    if model in ("paraformer", "sensevoice"):
+        return ["sherpa-onnx-cpu", "sherpa-onnx-cuda"]
+    if model == "funasr-nano":
+        return ["sherpa-onnx-cpu", "sherpa-onnx-dml", "sherpa-onnx-vulkan"]
+    return [_default_acceleration_for_model(model)]
 
 
 @app.get("/api/models/benchmark")
@@ -716,11 +1006,37 @@ async def get_model_benchmark():
     return {"benchmarks": _load_model_benchmark()}
 
 
+@app.get("/api/models/recommendation")
+async def get_model_recommendation():
+    return _build_recommendation(_load_model_benchmark(), _runtime_diagnostics())
+
+
 @app.post("/api/models/benchmark")
 async def post_model_benchmark(req: ModelBenchmarkRequest):
+    if req.all:
+        return await asyncio.to_thread(_benchmark_models, req.models, req.audio_file)
     model = req.model or load_app_config().server.model
     audio_file = req.audio_file or _default_benchmark_audio()
-    return await asyncio.to_thread(_run_model_benchmark, model, audio_file)
+    return await asyncio.to_thread(_run_model_benchmark, model, audio_file, True, req.acceleration)
+
+
+@app.post("/api/models/benchmark-all")
+async def post_model_benchmark_all(req: ModelBenchmarkRequest):
+    return await asyncio.to_thread(_benchmark_models, req.models, req.audio_file)
+
+
+@app.post("/api/models/apply-recommendation")
+async def apply_model_recommendation():
+    recommendation = _build_recommendation(_load_model_benchmark(), _runtime_diagnostics())
+    model = recommendation.get("realtime_model")
+    if not model:
+        raise HTTPException(status_code=409, detail=recommendation.get("reason") or "No GPU recommendation available")
+    config = load_app_config()
+    config.server.model = model
+    config.server.model_dir = ""
+    config.server.__post_init__()
+    save_app_config(config)
+    return {"status": "applied", "model": model, "config": app_config_to_dict(config)}
 
 
 @app.post("/api/models/select")

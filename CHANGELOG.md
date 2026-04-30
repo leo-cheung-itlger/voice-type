@@ -2,6 +2,20 @@
 
 ## 2026-04-30
 
+- Added initial Tauri v2 desktop-shell scaffolding under `frontend/src-tauri/`, including a 480x720 main window, tray Show/Quit menu, close-to-tray behavior, and runtime start/stop hooks.
+- Added `scripts/start-runtime.ps1` so a desktop shell can start or reuse the Python API, ASR server, and recording client without launching a browser frontend.
+- Updated frontend API base resolution so bundled Tauri pages can call `http://127.0.0.1:55342/api` instead of a broken relative `/api` path.
+- Recorded the staged packaging strategy in ADR-0004: Tauri dev shell first, portable Windows alpha second, formal installer only after runtime and model behavior are stable.
+- Validation: frontend typecheck passed; frontend production build passed; `scripts/start-runtime.ps1` reported runtime ready with API/ASR/client already running. Tauri compile/package is pending dependency installation approval for `@tauri-apps/*` npm packages and Rust crates.
+
+- Installed CUDA-enabled PyTorch in the project `venv` and changed Qwen initialization so the internal Transformers model is moved to CUDA when `gpu_required=true`.
+- Added hard blocking for fake GPU paths: Qwen no longer silently falls back to CPU when GPU is required, and sherpa-onnx CUDA now fails clearly when the current environment lacks a CUDA execution provider.
+- Fixed Paraformer initialization for sherpa-onnx 1.13 by using `OfflineRecognizer.from_paraformer`, so Paraformer CPU benchmarks now run.
+- Updated benchmark selection and Settings UI so the main model row prefers successful GPU results when GPU is required, instead of showing a slower CPU result or contradictory "failed/OK" text.
+- Validation: PyTorch reports `2.11.0+cu128`, CUDA `12.8`, and `NVIDIA GeForce RTX 5070 Ti Laptop GPU`; direct Qwen CUDA initialization succeeds; fixed sample benchmark measured `qwen3-asr-1.7b::pytorch-cuda` at about 31.79s load plus 4.61s inference and `qwen3-asr-1.7b::pytorch-cpu` at about 15.56s load plus 17.76s inference; Paraformer CPU measured about 1.31s load plus 0.16s inference; Paraformer CUDA correctly records an init failure because sherpa-onnx CUDA is unavailable. Python compile, frontend typecheck/build, API status/config/hardware/recommendation, ffmpeg status, WebSocket service fixture smoke, and browser Settings page smoke passed.
+
+- Added the repeatable model benchmark harness via `scripts/model_benchmark.py` and `/api/models/benchmark-all`, with per-model/mode records persisted to `data/model_benchmark.json` for model, backend, acceleration, actual GPU use, load/inference/total seconds, text, ok, and error.
+- Validation: Python compile passed for `api/api_server.py` and `scripts/model_benchmark.py`; `scripts/model_benchmark.py --list-models` listed the configured model ids; full benchmark harness wrote real records for all configured model/mode plans. `qwen3-asr-1.7b::pytorch-cpu` passed with about 19.31s load and 21.11s inference; missing models were recorded as missing; Qwen CUDA and paraformer sherpa-onnx modes recorded init failures instead of fake timings.
 - Moved VoiceType runtime ports to `55341/55342/55343` to avoid CapsWriter `52341` collisions, with legacy saved `52341/52342` config values migrated at load time.
 - Reworked `start.bat` / `stop.bat` and the PowerShell helpers so they clean project-owned duplicate processes, use the project `venv`, and start/stop API, frontend, ASR server, and recording client together.
 - Added API process conflict detection for managed server/client status, hardware/CUDA reporting, and Qwen model benchmark endpoints.

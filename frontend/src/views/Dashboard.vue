@@ -49,6 +49,15 @@
           </div>
           <button class="btn btn-small btn-ghost" @click="store.connectRecognition()">重连</button>
         </div>
+        <div class="row acceleration-row">
+          <div>
+            <div class="value">当前加速</div>
+            <div class="label">{{ store.accelerationState.detail }}</div>
+          </div>
+          <span class="accel-badge" :class="{ ok: store.accelerationState.active }">
+            {{ store.accelerationState.label }}
+          </span>
+        </div>
       </div>
     </section>
 
@@ -62,8 +71,8 @@
         <span>平均</span>
       </div>
       <div>
-        <strong>{{ store.config.client.output_mode }}</strong>
-        <span>输出</span>
+        <strong>{{ store.accelerationState.backend }}</strong>
+        <span>加速</span>
       </div>
     </section>
 
@@ -189,6 +198,30 @@ async function toggleClient() {
   margin-top: 3px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.acceleration-row {
+  align-items: flex-start;
+}
+
+.accel-badge {
+  flex: 0 0 auto;
+  max-width: 118px;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 104, 104, 0.22);
+  border-radius: 999px;
+  color: var(--danger);
+  background: rgba(255, 104, 104, 0.08);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accel-badge.ok {
+  border-color: rgba(125, 220, 155, 0.34);
+  color: var(--accent);
+  background: rgba(125, 220, 155, 0.1);
 }
 
 .recent-list {

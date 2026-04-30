@@ -60,6 +60,25 @@ start.bat
 
 Then open `http://127.0.0.1:55343/#/`. ASR server and client are started by `start.bat`; the control tab can still restart them.
 
+Start the desktop shell, after installing Tauri dependencies:
+
+```bat
+cd frontend
+npm install
+npm run desktop:dev
+```
+
+The Tauri development shell opens a 480x720 desktop window, starts the Python runtime through `scripts\start-runtime.ps1`, hides to tray when the window close button is clicked, and fully exits through the tray Quit menu.
+
+Build a desktop package, after the desktop shell has passed validation:
+
+```bat
+cd frontend
+npm run desktop:build
+```
+
+Do not treat the first package as a final installer. The first target should be a portable alpha package used from this project tree, with external models and the existing `venv`. A formal installer should come after runtime lifecycle, model selection, and update behavior are stable.
+
 ## Validation Order
 
 Every task must have an explicit validation gate. For implementation work, do not stop at "server started" or "build passed" when the user-facing behavior needs runtime confirmation.
@@ -114,6 +133,33 @@ venv\Scripts\python.exe scripts\asr_fixture_smoke.py --mode service --limit 3 --
 ```
 
 Direct mode loads Qwen3-ASR and transcribes mp3 files from the CapsWriter assets directory. Service mode sends decoded PCM audio through the managed WebSocket ASR server and verifies the server response.
+
+Model benchmark harness:
+
+```bat
+venv\Scripts\python.exe scripts\model_benchmark.py
+```
+
+The harness runs every configured model/mode plan and writes `data/model_benchmark.json`. Missing model directories are recorded as missing records without inference. To target specific models or audio:
+
+```bat
+venv\Scripts\python.exe scripts\model_benchmark.py --models qwen3-asr-1.7b paraformer --audio-file C:\Media\sample.mp3
+```
+
+Targeted CPU/GPU benchmark through the API:
+
+```bat
+curl -X POST http://127.0.0.1:55342/api/models/benchmark -H "Content-Type: application/json" -d "{\"model\":\"qwen3-asr-1.7b\",\"acceleration\":\"pytorch-cuda\"}"
+curl -X POST http://127.0.0.1:55342/api/models/benchmark -H "Content-Type: application/json" -d "{\"model\":\"qwen3-asr-1.7b\",\"acceleration\":\"pytorch-cpu\"}"
+curl -X POST http://127.0.0.1:55342/api/models/benchmark -H "Content-Type: application/json" -d "{\"model\":\"paraformer\",\"acceleration\":\"sherpa-onnx-cpu\"}"
+```
+
+GPU policy:
+
+- Default runtime policy is `gpu_required=true` and `allow_cpu_fallback=false`.
+- If the selected backend cannot use GPU, ASR startup or benchmark must fail with a clear error instead of silently using CPU.
+- Current verified GPU route is `qwen3-asr-1.7b::pytorch-cuda`.
+- Current very fast route is `paraformer::sherpa-onnx-cpu`, but it is not recommended while GPU is required.
 
 ## Acceptance Harness
 
@@ -195,12 +241,36 @@ File transcription validation:
 4. With no LLM API key, confirm the UI disables polishing or the API returns a clear configuration error.
 5. With a valid OpenAI-compatible key, submit a short task with `polish=true` and confirm polished TXT/SRT outputs are created.
 
+## Desktop Packaging
+
+Current desktop direction:
+
+1. Tauri dev shell: real desktop window over the existing Vue frontend.
+2. Portable Windows alpha: a zip/folder build that can be opened and deleted without installing system entries.
+3. Windows installer: only after the Python runtime, model paths, tray lifecycle, logs, and updater strategy are stable.
+4. macOS build: build on macOS or a macOS CI runner; do not expect reliable Windows-to-macOS cross-compilation.
+
+Desktop validation:
+
+1. `cd frontend && npm run build`
+2. `cd frontend && npm run desktop:dev`
+3. Confirm the window opens at about 480x720.
+4. Confirm `/api/status` returns managed server/client.
+5. Click the window close button and confirm it hides instead of killing runtime.
+6. Restore from tray.
+7. Use tray Quit and confirm `55341/55342/55343` are no longer listening.
+
 ## Failure Notes
 
 - In PowerShell, `npm` may fail if script execution policy blocks `npm.ps1`; use `cmd /c npm run build` or a normal Command Prompt.
 - In the Codex sandbox, Vite/esbuild may fail with `spawn EPERM`; rerun the build in a normal local terminal.
 - Qwen3-ASR initialization is configured for offline local model paths under the parent-level `models/` directory.
-- If CUDA is unavailable, Qwen3-ASR should remain on CPU instead of failing startup.
+- If CUDA is unavailable and `gpu_required=true`, Qwen3-ASR must fail startup instead of falling back to CPU. Only set `allow_cpu_fallback=true` for explicit CPU debugging.
+- PyTorch CUDA verification:
+
+```bat
+venv\Scripts\python.exe -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
+```
 - VoiceType uses ASR/API/frontend ports `55341/55342/55343`. Old CapsWriter may still own `52341`, but that should no longer block this project. If `/api/status` reports conflicts on `55341`, run `stop.bat` and then `start.bat`.
 - UI-managed server/client processes should not open black console windows; their logs are under `logs/managed_server_*.log` and `logs/managed_client_*.log`.
 - Settings saved from the Web console are written to `data/app_config.json`, which is intentionally ignored by Git.

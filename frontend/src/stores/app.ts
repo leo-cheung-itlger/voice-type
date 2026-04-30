@@ -25,6 +25,8 @@ export interface AppConfig {
     model: string
     model_dir: string
     gpu: boolean
+    gpu_required: boolean
+    allow_cpu_fallback: boolean
     gpu_backend: 'vulkan' | 'dml' | 'cuda'
   }
   client: {
@@ -52,7 +54,12 @@ export interface ModelEntry {
   exists: boolean
   backend?: string
   role?: string
+  acceleration?: string
+  blocking_reason?: string
+  gpu_required_supported?: boolean
+  recommended_for?: string[]
   benchmark?: ModelBenchmark | null
+  benchmarks?: Record<string, ModelBenchmark>
 }
 
 export interface ModelBenchmark {
@@ -62,6 +69,10 @@ export interface ModelBenchmark {
   loading_seconds?: number
   recognition_seconds?: number
   total_seconds?: number
+  inference_seconds?: number
+  actual_gpu?: boolean
+  acceleration?: string
+  backend?: string
   text?: string
   cuda_available?: boolean
   error?: string
@@ -80,7 +91,36 @@ export interface HardwareInfo {
     cuda_version: string | null
     error: string
   }
+  vulkan?: {
+    available: boolean
+    model_dir?: string
+    gguf_files?: string[]
+    error?: string
+  }
+  gpu_required?: boolean
+  allow_cpu_fallback?: boolean
+  blockers?: string[]
+  runtime_ready?: boolean
   recommendation: string
+}
+
+export interface AccelerationState {
+  label: string
+  detail: string
+  active: boolean
+  backend: AppConfig['server']['gpu_backend'] | 'cpu'
+  cudaReady: boolean
+  vulkanSelected: boolean
+  blocks: string[]
+}
+
+export interface AccelerationRecommendation {
+  model: string
+  modelName: string
+  gpu: boolean
+  gpu_backend: AppConfig['server']['gpu_backend']
+  reason: string
+  benchmarkSeconds: number | null
 }
 
 export interface FfmpegStatus {
@@ -122,7 +162,13 @@ export interface TranscriptionTask {
   error?: string
 }
 
-const API_BASE = '/api'
+const API_BASE = (() => {
+  const configured = import.meta.env.VITE_API_BASE
+  if (configured) return configured
+  const protocol = window.location.protocol
+  if (protocol !== 'http:' && protocol !== 'https:') return 'http://127.0.0.1:55342/api'
+  return '/api'
+})()
 
 const defaultConfig: AppConfig = {
   server: {
@@ -131,6 +177,8 @@ const defaultConfig: AppConfig = {
     model: 'qwen3-asr-1.7b',
     model_dir: '',
     gpu: true,
+    gpu_required: true,
+    allow_cpu_fallback: false,
     gpu_backend: 'cuda',
   },
   client: {
@@ -172,6 +220,7 @@ export const useAppStore = defineStore('app', () => {
   const models = ref<ModelEntry[]>([])
   const hardware = ref<HardwareInfo | null>(null)
   const benchmarks = ref<Record<string, ModelBenchmark>>({})
+  const benchmarkingModels = ref<string[]>([])
   const logs = ref<{ file: string; line: string }[]>([])
   const recentIssues = ref<{ file: string; line: string }[]>([])
   const hotwordContent = ref<Record<string, string>>({})
@@ -199,6 +248,98 @@ export const useAppStore = defineStore('app', () => {
     if (serverRunning.value && clientRunning.value) return 'Ready'
     if (serverRunning.value || clientRunning.value) return 'Partial'
     return 'Stopped'
+  })
+  const selectedModel = computed(() => models.value.find((model) => model.id === config.value.server.model) || null)
+  function bestBenchmarkForModel(model: ModelEntry, gpuOnly = false) {
+    const candidates = [
+      model.benchmark,
+      benchmarks.value[model.id],
+      ...Object.values(model.benchmarks || {}),
+    ].filter(Boolean) as ModelBenchmark[]
+    const successful = candidates
+      .filter((bench) => bench.ok && Number(bench.recognition_seconds || bench.inference_seconds || 0) > 0)
+      .filter((bench) => !gpuOnly || bench.actual_gpu)
+      .sort((a, b) => Number(a.recognition_seconds || a.inference_seconds || 0) - Number(b.recognition_seconds || b.inference_seconds || 0))
+    if (successful.length) return successful[0]
+    const relevantFailures = candidates
+      .filter((bench) => !gpuOnly || bench.actual_gpu || /cuda|vulkan|dml/.test(bench.acceleration || ''))
+      .sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0))
+    return relevantFailures[0] || null
+  }
+  const accelerationState = computed<AccelerationState>(() => {
+    const torch = hardware.value?.torch
+    const backend = config.value.server.gpu ? config.value.server.gpu_backend : 'cpu'
+    const selected = selectedModel.value
+    const isQwen = (selected?.backend || selected?.id || '').toLowerCase().includes('qwen')
+    const blocks: string[] = []
+
+    if (!config.value.server.gpu) {
+      blocks.push('设置中已关闭 GPU 加速。')
+    } else if (config.value.server.gpu_backend === 'cuda') {
+      if (!hardware.value?.nvidia_gpu) blocks.push('nvidia-smi 未检测到 NVIDIA GPU。')
+      if (!torch?.available) blocks.push(torch?.error || 'PyTorch 不可用。')
+      else if (!torch.cuda_available) blocks.push('当前 PyTorch 未启用 CUDA。')
+    } else if (config.value.server.gpu_backend === 'vulkan' && isQwen) {
+      blocks.push('Qwen safetensors 走 PyTorch；Vulkan 仅适用于 sherpa-onnx 类后端。')
+    } else if (config.value.server.gpu_backend === 'dml' && isQwen) {
+      blocks.push('当前 Qwen safetensors 后端不使用 DirectML。')
+    }
+
+    const cudaReady = Boolean(config.value.server.gpu && config.value.server.gpu_backend === 'cuda' && torch?.cuda_available)
+    const vulkanSelected = Boolean(config.value.server.gpu && config.value.server.gpu_backend === 'vulkan')
+    const active = Boolean(config.value.server.gpu && blocks.length === 0)
+    const label = !config.value.server.gpu
+      ? 'CPU'
+      : cudaReady
+        ? 'CUDA'
+        : vulkanSelected && blocks.length === 0
+          ? 'Vulkan'
+          : 'CPU fallback'
+    const detail = blocks.length
+      ? blocks[0]
+      : active
+        ? `${config.value.server.gpu_backend.toUpperCase()} 已用于 ${selected?.name || config.value.server.model}`
+        : '已选择 CPU 推理'
+
+    return {
+      label,
+      detail,
+      active,
+      backend,
+      cudaReady,
+      vulkanSelected,
+      blocks,
+    }
+  })
+  const accelerationRecommendation = computed<AccelerationRecommendation>(() => {
+    const installed = models.value.filter((model) => model.exists)
+    const requireGpu = Boolean(config.value.server.gpu_required && !config.value.server.allow_cpu_fallback)
+    const benchmarked = installed
+      .map((model) => ({ model, benchmark: bestBenchmarkForModel(model, requireGpu) }))
+      .filter((entry) => entry.benchmark?.ok && Number(entry.benchmark?.recognition_seconds || 0) > 0)
+      .sort((a, b) => Number(a.benchmark?.recognition_seconds || 0) - Number(b.benchmark?.recognition_seconds || 0))
+    const daily = installed.find((model) => model.role === 'daily')
+    const quality = installed.find((model) => model.role === 'quality')
+    const fallback = daily || quality || installed[0] || selectedModel.value
+    const recommendedModel = benchmarked[0]?.model || fallback
+    const benchmarkSeconds = benchmarked[0]?.benchmark?.recognition_seconds ?? null
+    const cudaReady = Boolean(hardware.value?.torch.cuda_available)
+    const gpu = cudaReady
+    const gpu_backend: AppConfig['server']['gpu_backend'] = cudaReady ? 'cuda' : config.value.server.gpu_backend
+    const reason = benchmarked[0]
+      ? `已安装${requireGpu ? ' GPU' : ''}模型中最快：${Number(benchmarkSeconds || 0).toFixed(2)}s。`
+      : cudaReady
+        ? 'CUDA 可用；测试全部已安装模型后可确认最快日用选择。'
+        : hardware.value?.recommendation || '测试已安装模型后可选择日用模型。'
+
+    return {
+      model: recommendedModel?.id || config.value.server.model,
+      modelName: recommendedModel?.name || config.value.server.model,
+      gpu,
+      gpu_backend,
+      reason,
+      benchmarkSeconds: benchmarkSeconds == null ? null : Number(benchmarkSeconds),
+    }
   })
 
   async function apiFetch<T = any>(path: string, options?: RequestInit): Promise<T | null> {
@@ -285,13 +426,23 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function runBenchmark(model: string) {
+    if (!benchmarkingModels.value.includes(model)) benchmarkingModels.value.push(model)
     const data = await apiFetch<ModelBenchmark>('/models/benchmark', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model }),
     })
+    benchmarkingModels.value = benchmarkingModels.value.filter((item) => item !== model)
     await Promise.all([fetchBenchmarks(), fetchModels()])
     return data
+  }
+
+  async function runAllBenchmarks() {
+    const targets = models.value.filter((model) => model.exists).map((model) => model.id)
+    for (const model of targets) {
+      await runBenchmark(model)
+    }
+    return targets.length
   }
 
   async function selectModel(model: string) {
@@ -304,6 +455,17 @@ export const useAppStore = defineStore('app', () => {
     })
     await fetchConfig()
     await fetchModels()
+  }
+
+  async function applyAccelerationRecommendation() {
+    const recommendation = accelerationRecommendation.value
+    config.value.server.model = recommendation.model
+    config.value.server.model_dir = ''
+    config.value.server.gpu = recommendation.gpu
+    config.value.server.gpu_backend = recommendation.gpu_backend
+    await saveConfig()
+    await selectModel(recommendation.model)
+    await Promise.all([fetchConfig(), fetchModels(), fetchHardware(), fetchBenchmarks()])
   }
 
   async function startServer() {
@@ -511,9 +673,9 @@ export const useAppStore = defineStore('app', () => {
     serverPortOpen, serverConflict, clientConflict, serverProcessCount, clientProcessCount,
     history, errorMarks, wsConnected, currentPartial, topWords,
     config, models, logs, recentIssues, hotwordContent, selectedHotword,
-    ffmpeg, llmConfig, transcriptions, hardware, benchmarks, lastError,
-    latestEntry, totalEntries, avgDelay, serviceLabel,
-    fetchStatus, fetchHealth, fetchConfig, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, selectModel,
+    ffmpeg, llmConfig, transcriptions, hardware, benchmarks, benchmarkingModels, lastError,
+    latestEntry, totalEntries, avgDelay, serviceLabel, selectedModel, accelerationState, accelerationRecommendation,
+    fetchStatus, fetchHealth, fetchConfig, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, applyAccelerationRecommendation,
     startServer, stopServer, startClient, stopClient, startAll, stopAll,
     fetchHistory, clearHistory, deleteHistoryEntry, addErrorMark, fetchErrorMarks,
     fetchStats, fetchLogs, fetchHotword, saveHotword,

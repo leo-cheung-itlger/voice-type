@@ -19,6 +19,7 @@ APP_CONFIG_FILE = os.path.join(DATA_DIR, "app_config.json")
 MODEL_DIR_NAMES = {
     "qwen3-asr-0.6b": "Qwen3-ASR-0.6B",
     "qwen3-asr-1.7b": "Qwen3-ASR-1.7B",
+    "qwen3-asr-1.7b-gguf-vulkan": "Qwen3-ASR-1.7B-GGUF",
     "funasr-nano": "Fun-ASR-Nano-GGUF",
     "sensevoice": "SenseVoice-Small",
     "paraformer": "paraformer-offline-zh",
@@ -55,9 +56,11 @@ def resolve_model_dir(model: str) -> str:
 class ServerConfig:
     host: str = "0.0.0.0"
     port: int = DEFAULT_ASR_PORT
-    model: Literal["qwen3-asr-0.6b", "qwen3-asr-1.7b", "funasr-nano", "sensevoice", "paraformer"] = "qwen3-asr-1.7b"
+    model: Literal["qwen3-asr-0.6b", "qwen3-asr-1.7b", "qwen3-asr-1.7b-gguf-vulkan", "funasr-nano", "sensevoice", "paraformer"] = "qwen3-asr-1.7b"
     model_dir: str = ""
     gpu: bool = True
+    gpu_required: bool = True
+    allow_cpu_fallback: bool = False
     gpu_backend: Literal["vulkan", "dml", "cuda"] = "cuda"
     max_connections: int = 10
     ping_interval: int = 20

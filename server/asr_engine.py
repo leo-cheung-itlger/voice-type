@@ -8,19 +8,34 @@ logger = setup_logger("asr_engine")
 
 
 class ASREngine:
-    def __init__(self, model: str, model_dir: str, gpu: bool = True, gpu_backend: str = "cuda"):
+    def __init__(
+        self,
+        model: str,
+        model_dir: str,
+        gpu: bool = True,
+        gpu_backend: str = "cuda",
+        gpu_required: bool = True,
+        allow_cpu_fallback: bool = False,
+    ):
         self._model = model
         self._model_dir = model_dir
         self._gpu = gpu
         self._gpu_backend = gpu_backend
+        self._gpu_required = gpu_required
+        self._allow_cpu_fallback = allow_cpu_fallback
         self._recognizer = None
         self._qwen_model = None
         self._backend = None
+        self._acceleration = "not-initialized"
+        self._using_gpu = False
+        self._last_error = ""
 
     def initialize(self) -> bool:
         try:
             if self._model in ("qwen3-asr-1.7b", "qwen3-asr-0.6b"):
                 return self._init_qwen3_asr()
+            elif self._model == "qwen3-asr-1.7b-gguf-vulkan":
+                return self._init_qwen3_asr_gguf_vulkan()
             elif self._model in ("sensevoice", "paraformer"):
                 return self._init_sherpa_onnx()
             elif self._model == "funasr-nano":
@@ -30,9 +45,15 @@ class ASREngine:
                 return False
         except Exception as e:
             logger.error(f"Failed to initialize ASR engine: {e}")
+            self._last_error = str(e)
             import traceback
             traceback.print_exc()
             return False
+
+    def _fail(self, message: str) -> bool:
+        self._last_error = message
+        logger.error(message)
+        return False
 
     def _init_qwen3_asr(self) -> bool:
         try:
@@ -53,16 +74,42 @@ class ASREngine:
 
             logger.info(f"Loading Qwen3-ASR from local path: {model_name}")
             self._qwen_model = Qwen3ASRModel.from_pretrained(model_name)
-            if self._gpu and hasattr(self._qwen_model, 'to'):
+            if self._gpu:
                 try:
                     import torch
 
                     if torch.cuda.is_available():
-                        self._qwen_model = self._qwen_model.to("cuda")
+                        moved = self._move_qwen_model_to_cuda()
+                        if not moved:
+                            message = "CUDA is available but qwen-asr model could not be moved to CUDA"
+                            if self._gpu_required and not self._allow_cpu_fallback:
+                                return self._fail(message)
+                            logger.warning(f"{message}; using CPU fallback")
+                            self._acceleration = "pytorch-cpu"
+                        else:
+                            try:
+                                torch.cuda.synchronize()
+                            except Exception:
+                                pass
+                            logger.info(f"Qwen3-ASR moved to CUDA device: {torch.cuda.get_device_name(0)}")
+                            self._acceleration = "pytorch-cuda"
+                            self._using_gpu = True
                     else:
-                        logger.warning("CUDA requested but not available; using CPU")
+                        message = "CUDA requested but current PyTorch is CPU-only or CUDA is unavailable"
+                        if self._gpu_required and not self._allow_cpu_fallback:
+                            return self._fail(message)
+                        logger.warning(f"{message}; using CPU fallback")
+                        self._acceleration = "pytorch-cpu"
                 except Exception as e:
-                    logger.warning(f"CUDA availability check failed; using CPU: {e}")
+                    message = f"CUDA availability check failed: {e}"
+                    if self._gpu_required and not self._allow_cpu_fallback:
+                        return self._fail(message)
+                    logger.warning(f"{message}; using CPU fallback")
+                    self._acceleration = "pytorch-cpu"
+            else:
+                self._acceleration = "pytorch-cpu"
+                if self._gpu_required and not self._allow_cpu_fallback:
+                    return self._fail("GPU is required but Qwen model does not expose a CUDA move method")
             self._backend = "qwen-asr"
             logger.info(f"Qwen3-ASR model loaded: {model_name} (gpu={self._gpu})")
             return True
@@ -72,7 +119,31 @@ class ASREngine:
             return self._init_sherpa_onnx()
         except Exception as e:
             logger.error(f"Failed to init Qwen3-ASR: {e}")
+            self._last_error = str(e)
             return False
+
+    def _move_qwen_model_to_cuda(self) -> bool:
+        inner_model = getattr(self._qwen_model, "model", None)
+        if inner_model is None or not hasattr(inner_model, "to"):
+            return False
+        inner_model = inner_model.to("cuda")
+        self._qwen_model.model = inner_model
+        try:
+            first_param = next(inner_model.parameters())
+            self._qwen_model.device = first_param.device
+            self._qwen_model.dtype = first_param.dtype
+        except Exception:
+            self._qwen_model.device = getattr(inner_model, "device", "cuda")
+            self._qwen_model.dtype = getattr(inner_model, "dtype", None)
+        return True
+
+    def _init_qwen3_asr_gguf_vulkan(self) -> bool:
+        if not os.path.isdir(self._model_dir):
+            return self._fail(f"Qwen3-ASR-GGUF model dir not found: {self._model_dir}")
+        gguf_files = [f for f in os.listdir(self._model_dir) if f.lower().endswith(".gguf")]
+        if not gguf_files:
+            return self._fail(f"No Qwen3-ASR GGUF files found in {self._model_dir}")
+        return self._fail("Qwen3-ASR-GGUF Vulkan backend is detected but not implemented in VoiceType yet")
 
     def _init_sherpa_onnx(self) -> bool:
         import sherpa_onnx
@@ -85,6 +156,15 @@ class ASREngine:
                 provider = "vulkan"
             elif self._gpu_backend == "dml":
                 provider = "dml"
+
+        if self._gpu_required and self._gpu and provider == "cpu" and not self._allow_cpu_fallback:
+            return self._fail("GPU is required but no non-CPU sherpa-onnx provider was selected")
+        if provider != "cpu" and not self._sherpa_provider_available(provider):
+            message = f"sherpa-onnx provider '{provider}' is not available in the current Python environment"
+            if self._gpu_required and not self._allow_cpu_fallback:
+                return self._fail(message)
+            logger.warning(f"{message}; using CPU fallback")
+            provider = "cpu"
 
         model_dir = self._model_dir
         if not os.path.isdir(model_dir):
@@ -104,17 +184,18 @@ class ASREngine:
                 logger.error(f"No ONNX model found in {model_dir}")
                 return False
 
-            config = sherpa_onnx.OfflineRecognizerConfig(
-                model_config=sherpa_onnx.OfflineModelConfig(
-                    sense_voice=sherpa_onnx.OfflineSenseVoiceModelConfig(
-                        model=model_file,
-                        language="auto",
-                    ),
+            try:
+                self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                    model=model_file,
                     tokens=tokens_file,
                     num_threads=4,
                     provider=provider,
-                ),
-            )
+                    language="auto",
+                )
+            except Exception as e:
+                if self._gpu_required and provider != "cpu" and not self._allow_cpu_fallback:
+                    return self._fail(f"sherpa-onnx provider '{provider}' failed while GPU is required: {e}")
+                raise
 
         elif self._model == "paraformer":
             model_file = os.path.join(model_dir, "model.int8.onnx")
@@ -124,16 +205,17 @@ class ASREngine:
                 logger.error(f"No ONNX model found in {model_dir}")
                 return False
 
-            config = sherpa_onnx.OfflineRecognizerConfig(
-                model_config=sherpa_onnx.OfflineModelConfig(
-                    paraformer=sherpa_onnx.OfflineParaformerModelConfig(
-                        model=model_file,
-                    ),
+            try:
+                self._recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
+                    paraformer=model_file,
                     tokens=tokens_file,
                     num_threads=4,
                     provider=provider,
-                ),
-            )
+                )
+            except Exception as e:
+                if self._gpu_required and provider != "cpu" and not self._allow_cpu_fallback:
+                    return self._fail(f"sherpa-onnx provider '{provider}' failed while GPU is required: {e}")
+                raise
 
         elif self._model == "funasr-nano":
             gguf_files = [f for f in os.listdir(model_dir) if f.endswith(".gguf")]
@@ -171,10 +253,36 @@ class ASREngine:
             logger.error(f"Unknown sherpa-onnx model: {self._model}")
             return False
 
-        self._recognizer = sherpa_onnx.OfflineRecognizer(config)
+        if self._recognizer is None:
+            try:
+                self._recognizer = sherpa_onnx.OfflineRecognizer(config)
+            except Exception as e:
+                if self._gpu_required and provider != "cpu" and not self._allow_cpu_fallback:
+                    return self._fail(f"sherpa-onnx provider '{provider}' failed while GPU is required: {e}")
+                raise
         self._backend = "sherpa-onnx"
+        self._acceleration = f"sherpa-onnx-{provider}"
+        self._using_gpu = provider != "cpu"
         logger.info(f"Sherpa-ONNX model loaded: {self._model} (provider={provider})")
         return True
+
+    def _sherpa_provider_available(self, provider: str) -> bool:
+        if provider == "cpu":
+            return True
+        try:
+            import onnxruntime as ort
+
+            providers = set(ort.get_available_providers())
+        except Exception:
+            providers = set()
+        provider_map = {
+            "cuda": "CUDAExecutionProvider",
+            "dml": "DmlExecutionProvider",
+        }
+        expected = provider_map.get(provider)
+        if expected:
+            return expected in providers
+        return False
 
     def _find_onnx(self, model_dir: str) -> Optional[str]:
         for f in os.listdir(model_dir):
@@ -252,3 +360,15 @@ class ASREngine:
     @property
     def backend(self) -> Optional[str]:
         return self._backend
+
+    @property
+    def acceleration(self) -> str:
+        return self._acceleration
+
+    @property
+    def using_gpu(self) -> bool:
+        return self._using_gpu
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error

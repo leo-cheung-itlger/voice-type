@@ -25,6 +25,8 @@ class ASRServer:
             model_dir=config.model_dir,
             gpu=config.gpu,
             gpu_backend=config.gpu_backend,
+            gpu_required=config.gpu_required,
+            allow_cpu_fallback=config.allow_cpu_fallback,
         )
         self._active_connections: Dict[str, websockets.WebSocketServerProtocol] = {}
         self._monitor_connections: Dict[str, websockets.WebSocketServerProtocol] = {}
@@ -200,6 +202,14 @@ def main():
             config.gpu = True
         elif arg.startswith("--gpu-backend="):
             config.gpu_backend = arg.split("=", 1)[1]
+        elif arg == "--gpu-required":
+            config.gpu_required = True
+        elif arg == "--no-gpu-required":
+            config.gpu_required = False
+        elif arg == "--allow-cpu-fallback":
+            config.allow_cpu_fallback = True
+        elif arg == "--no-allow-cpu-fallback":
+            config.allow_cpu_fallback = False
 
     server = ASRServer(config)
     asyncio.run(server.start())

@@ -47,17 +47,28 @@
         </label>
         <label class="row setting-row">
           <span>
-            <span class="value">GPU</span>
-            <span class="label">服务端重启后生效</span>
+            <span class="value">GPU 加速</span>
+            <span class="label">{{ store.accelerationState.detail }}</span>
           </span>
           <input v-model="store.config.server.gpu" type="checkbox" />
+        </label>
+        <label class="row setting-row">
+          <span>
+            <span class="value">加速后端</span>
+            <span class="label">CUDA / Vulkan / DirectML，服务端重启后生效</span>
+          </span>
+          <select v-model="store.config.server.gpu_backend" class="field compact">
+            <option value="cuda">CUDA</option>
+            <option value="vulkan">Vulkan</option>
+            <option value="dml">DirectML</option>
+          </select>
         </label>
       </div>
     </section>
 
     <section class="section">
       <div class="section-title">
-        <span>硬件</span>
+        <span>硬件与加速</span>
         <button class="btn btn-small btn-ghost" @click="store.fetchHardware()">刷新</button>
       </div>
       <div class="panel">
@@ -66,8 +77,8 @@
             <div class="value">{{ store.hardware?.nvidia_gpu ? 'NVIDIA GPU 已检测' : '未检测到 NVIDIA GPU' }}</div>
             <div class="label">{{ gpuLabel }}</div>
           </div>
-          <span class="model-state" :class="{ ok: store.hardware?.torch.cuda_available }">
-            {{ store.hardware?.torch.cuda_available ? 'CUDA OK' : 'CPU' }}
+          <span class="model-state" :class="{ ok: store.accelerationState.active }">
+            {{ store.accelerationState.label }}
           </span>
         </div>
         <div class="row">
@@ -76,6 +87,32 @@
             <div class="label">{{ torchLabel }}</div>
           </div>
           <span class="label">{{ store.hardware?.memory_gb ? `${store.hardware.memory_gb}GB RAM` : '-' }}</span>
+        </div>
+        <div class="state-grid">
+          <div>
+            <span>GPU</span>
+            <strong :class="{ ok: store.hardware?.nvidia_gpu }">{{ store.hardware?.nvidia_gpu ? '已检测' : '缺失' }}</strong>
+          </div>
+          <div>
+            <span>CUDA</span>
+            <strong :class="{ ok: store.accelerationState.cudaReady }">{{ store.accelerationState.cudaReady ? '可用' : '受阻' }}</strong>
+          </div>
+          <div>
+            <span>Vulkan</span>
+            <strong :class="{ ok: store.accelerationState.vulkanSelected && store.accelerationState.blocks.length === 0 }">
+              {{ store.accelerationState.vulkanSelected ? '已选择' : '未选择' }}
+            </strong>
+          </div>
+        </div>
+        <div v-if="store.accelerationState.blocks.length" class="block-list">
+          <div v-for="block in store.accelerationState.blocks" :key="block">{{ block }}</div>
+        </div>
+        <div class="recommendation-panel">
+          <div>
+            <div class="value">推荐：{{ store.accelerationRecommendation.modelName }}</div>
+            <div class="label">{{ store.accelerationRecommendation.reason }}</div>
+          </div>
+          <button class="btn btn-small btn-primary" @click="applyRecommendation">应用推荐</button>
         </div>
       </div>
     </section>
@@ -107,6 +144,13 @@
           @click="benchmarkSelected"
         >
           {{ benchmarking ? '测试中' : '测试当前模型' }}
+        </button>
+        <button
+          class="btn btn-small btn-ghost"
+          :disabled="benchmarking"
+          @click="benchmarkAll"
+        >
+          {{ benchmarking ? '队列中' : '测试全部已安装' }}
         </button>
         <span class="label">{{ benchmarkHint }}</span>
       </div>
@@ -149,12 +193,12 @@ const torchLabel = computed(() => {
 })
 
 const benchmarkHint = computed(() => {
-  const model = store.config.server.model
-  const result = store.benchmarks[model]
+  const model = store.models.find((item) => item.id === store.config.server.model)
+  const result = model ? bestBenchmark(model) : store.benchmarks[store.config.server.model]
   if (!result) return '用于判断 0.6B/1.7B 在本机的真实耗时'
   if (!result.exists) return '模型未安装'
   if (!result.ok) return result.error || '测试失败'
-  return `最近耗时 ${Number(result.recognition_seconds || 0).toFixed(2)}s`
+  return `最近耗时 ${Number(result.recognition_seconds || result.inference_seconds || 0).toFixed(2)}s · ${result.acceleration || 'unknown'}`
 })
 
 async function save() {
@@ -166,10 +210,41 @@ function modelSummary(model: ModelEntry) {
   const parts = [model.exists ? '已安装' : '未安装', model.backend || 'unknown']
   if (model.role === 'daily') parts.push('日用候选')
   if (model.role === 'quality') parts.push('高质量')
-  const bench = model.benchmark || store.benchmarks[model.id]
-  if (bench?.ok) parts.push(`${Number(bench.recognition_seconds || 0).toFixed(2)}s`)
-  if (bench && !bench.ok && bench.error) parts.push('测试失败')
+  if (model.blocking_reason) parts.push(blockingLabel(model.blocking_reason))
+  const bench = bestBenchmark(model)
+  if (bench?.ok) {
+    const mode = bench.actual_gpu ? 'GPU' : 'CPU'
+    parts.push(`${mode} ${Number(bench.recognition_seconds || bench.inference_seconds || 0).toFixed(2)}s`)
+  }
+  if (bench && !bench.ok && bench.error) parts.push(`${bench.acceleration || '测试'}失败`)
   return parts.join(' · ')
+}
+
+function bestBenchmark(model: ModelEntry) {
+  const gpuOnly = Boolean(store.config.server.gpu_required && !store.config.server.allow_cpu_fallback)
+  const candidates = [
+    model.benchmark,
+    store.benchmarks[model.id],
+    ...Object.values(model.benchmarks || {}),
+  ].filter(Boolean)
+  const successful = candidates
+    .filter((bench) => bench?.ok && Number(bench.recognition_seconds || bench.inference_seconds || 0) > 0)
+    .filter((bench) => !gpuOnly || bench?.actual_gpu)
+    .sort((a, b) => Number(a?.recognition_seconds || a?.inference_seconds || 0) - Number(b?.recognition_seconds || b?.inference_seconds || 0))
+  if (successful.length) return successful[0]
+  return candidates
+    .filter((bench) => !gpuOnly || bench?.actual_gpu || /cuda|vulkan|dml/.test(bench?.acceleration || ''))
+    .sort((a, b) => Number(b?.updated_at || 0) - Number(a?.updated_at || 0))[0] || null
+}
+
+function blockingLabel(reason: string) {
+  const labels: Record<string, string> = {
+    model_missing: '模型缺失',
+    cuda_unavailable: 'CUDA 受阻',
+    gguf_vulkan_missing: 'Vulkan 缺失',
+    cpu_only_model_blocked_by_gpu_required: 'CPU-only 已阻止',
+  }
+  return labels[reason] || reason
 }
 
 async function refreshModels() {
@@ -183,6 +258,19 @@ async function benchmarkSelected() {
   } finally {
     benchmarking.value = false
   }
+}
+
+async function benchmarkAll() {
+  benchmarking.value = true
+  try {
+    await store.runAllBenchmarks()
+  } finally {
+    benchmarking.value = false
+  }
+}
+
+async function applyRecommendation() {
+  await store.applyAccelerationRecommendation()
 }
 
 onMounted(() => {
@@ -253,9 +341,74 @@ input[type="checkbox"] {
   color: var(--accent);
 }
 
+.state-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.state-grid div {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.state-grid span,
+.state-grid strong {
+  display: block;
+}
+
+.state-grid span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.state-grid strong {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--danger);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.state-grid strong.ok {
+  color: var(--accent);
+}
+
+.block-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.block-list div {
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 199, 120, 0.26);
+  border-radius: 10px;
+  color: var(--warn);
+  background: rgba(255, 199, 120, 0.08);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.recommendation-panel {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
 .benchmark-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 10px;
 }
