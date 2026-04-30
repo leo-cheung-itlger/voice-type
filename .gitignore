@@ -22,12 +22,14 @@ frontend/.vite-temp/
 logs/
 data/recordings/
 data/transcription_uploads/
+data/transcription_validation/
 data/*.json
 data/*.jsonl
 data/*.db
 
 # Models and large local assets
 models/
+tools/ffmpeg/
 *.onnx
 *.gguf
 *.safetensors

@@ -21,6 +21,7 @@ logger = setup_logger("transcription")
 TRANSCRIPTION_DB = os.path.join(DATA_DIR, "transcriptions.json")
 LLM_CONFIG_FILE = os.path.join(DATA_DIR, "llm_config.json")
 UPLOAD_DIR = os.path.join(DATA_DIR, "transcription_uploads")
+LOCAL_FFMPEG_DIR = os.path.join(BASE_DIR, "tools", "ffmpeg", "bin")
 
 SUPPORTED_EXTENSIONS = {
     ".mp3",
@@ -82,8 +83,18 @@ def save_llm_config(values: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def ffmpeg_status() -> Dict[str, Any]:
-    ffmpeg_path = os.environ.get("VOICETYPE_FFMPEG_PATH") or shutil.which("ffmpeg")
-    ffprobe_path = os.environ.get("VOICETYPE_FFPROBE_PATH") or shutil.which("ffprobe")
+    local_ffmpeg = os.path.join(LOCAL_FFMPEG_DIR, "ffmpeg.exe")
+    local_ffprobe = os.path.join(LOCAL_FFMPEG_DIR, "ffprobe.exe")
+    ffmpeg_path = (
+        os.environ.get("VOICETYPE_FFMPEG_PATH")
+        or shutil.which("ffmpeg")
+        or (local_ffmpeg if os.path.exists(local_ffmpeg) else "")
+    )
+    ffprobe_path = (
+        os.environ.get("VOICETYPE_FFPROBE_PATH")
+        or shutil.which("ffprobe")
+        or (local_ffprobe if os.path.exists(local_ffprobe) else "")
+    )
     return {
         "available": bool(ffmpeg_path),
         "ffmpeg": ffmpeg_path or "",

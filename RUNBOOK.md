@@ -154,6 +154,12 @@ Check ffmpeg:
 curl http://127.0.0.1:52342/api/ffmpeg/status
 ```
 
+ffmpeg is resolved in this order:
+
+1. `VOICETYPE_FFMPEG_PATH` / `VOICETYPE_FFPROBE_PATH`
+2. System `PATH`
+3. Project-local `tools\ffmpeg\bin\ffmpeg.exe`
+
 Create a path-based transcription task:
 
 ```bat

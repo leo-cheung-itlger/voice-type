@@ -2,6 +2,12 @@
 
 ## 2026-04-29
 
+- Added project-local ffmpeg fallback detection at `tools/ffmpeg/bin`, with `tools/ffmpeg/` ignored by Git for local binary installs.
+- Installed local ffmpeg 8.1 essentials for this workspace and verified `/api/ffmpeg/status` returns `available=true`.
+- Validation: Python compile passed; frontend typecheck/build passed; mp3 and generated mp4 transcription task completed through the HTTP API; JSON/TXT/SRT outputs were created and inspected; browser Transcriptions page no longer shows ffmpeg missing and had no new console errors. Client was restarted through the API after dev-process restart.
+
+## 2026-04-29
+
 - Added the first file transcription module: HTTP queue APIs, ffmpeg detection, browser upload support, path-based tasks, JSON/TXT/SRT export, cancellation, and OpenAI-compatible LLM polishing config.
 - Added the compact frontend Transcriptions page with drag/drop upload confirmation, path-based task creation, queue status, format selection, and LLM polishing controls.
 - Added project-local agent Skill instructions at `.agents/skills/voicetype-transcription/SKILL.md` and ADR-0003 documenting the API-first transcription design.
