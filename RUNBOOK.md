@@ -70,6 +70,18 @@ npm run desktop:dev
 
 The Tauri development shell opens a 480x720 desktop window, starts the Python runtime through `scripts\start-runtime.ps1`, hides to tray when the window close button is clicked, and fully exits through the tray Quit menu.
 
+Windows Tauri builds require the Microsoft MSVC linker. If `npm run desktop:build` fails with `link.exe not found`, install Visual Studio 2022 Build Tools with the C++ desktop workload, then open a new terminal and rerun the build. Check the linker with:
+
+```bat
+where link
+```
+
+If `where link` only works after loading Visual Studio's developer environment, run desktop commands through `VsDevCmd.bat`:
+
+```bat
+cmd /c "\"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat\" -arch=x64 && cd /d C:\Users\13678\Documents\.Projects\voice-type\frontend && npm run desktop:build"
+```
+
 Build a desktop package, after the desktop shell has passed validation:
 
 ```bat
@@ -77,7 +89,22 @@ cd frontend
 npm run desktop:build
 ```
 
+Current Windows build outputs:
+
+- `frontend\src-tauri\target\release\voicetype.exe`
+- `frontend\src-tauri\target\release\bundle\msi\VoiceType_0.1.0_x64_en-US.msi`
+- `frontend\src-tauri\target\release\bundle\nsis\VoiceType_0.1.0_x64-setup.exe`
+
 Do not treat the first package as a final installer. The first target should be a portable alpha package used from this project tree, with external models and the existing `venv`. A formal installer should come after runtime lifecycle, model selection, and update behavior are stable.
+
+If `npm run desktop:build` fails because `frontend\src-tauri\target\release\voicetype.exe` is locked, close all running VoiceType windows and tray instances. If another process such as Everything still holds the executable, build into a temporary target directory:
+
+```bat
+set CARGO_TARGET_DIR=C:\Users\13678\Documents\.Projects\voice-type\frontend\src-tauri\target-codex-build
+cmd /c "\"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat\" -arch=x64 && cd /d C:\Users\13678\Documents\.Projects\voice-type\frontend && npm run desktop:build"
+```
+
+The temporary EXE is written to `frontend\src-tauri\target-codex-build\release\voicetype.exe`.
 
 ## Validation Order
 
@@ -188,6 +215,14 @@ For daily ASR changes:
 5. Confirm saved audio path is present when recording save is enabled.
 6. Restart server/client and confirm status recovers.
 7. If recording notifications are enabled, confirm a topmost desktop prompt and a short beep appear on start and finish.
+
+Short-press and archive checks:
+
+1. Confirm `/api/config` exposes `client.min_press_seconds` and `client.archive_root`.
+2. Tap the shortcut faster than the threshold; no audio, ASR request, history row, or archive directory should be produced.
+3. Hold the shortcut longer than the threshold; the task should create `data\archive\YYYY\MM\DD\HHMMSS_<task_id>\recording.wav` and `result.json`.
+4. The topmost prompt should move from recording to analyzing with seconds, then success with a one-decimal duration.
+5. History and Dashboard should show the result duration to one decimal place.
 
 If a step cannot run because local model files, microphone access, GPU, or OS interaction is unavailable, record the exact blocked step and the manual command needed.
 

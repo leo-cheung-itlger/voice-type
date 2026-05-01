@@ -89,6 +89,8 @@ class ClientConfig:
     clipboard_verify_interval: float = 0.02
     save_audio: bool = True
     audio_dir: str = ""
+    archive_root: str = ""
+    min_press_seconds: float = 0.1
     hotword_files: list = field(default_factory=lambda: ["hot-zh.txt", "hot-en.txt", "hot-rule.txt"])
     notification_enabled: bool = True
     notification_sound: bool = True
@@ -100,6 +102,8 @@ class ClientConfig:
     def __post_init__(self):
         if not self.audio_dir:
             self.audio_dir = os.path.join(DATA_DIR, "recordings")
+        if not self.archive_root:
+            self.archive_root = os.path.join(DATA_DIR, "archive")
 
 
 @dataclass

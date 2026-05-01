@@ -61,6 +61,7 @@ class ASRServer:
         time_start = time.time()
         time_submit = 0.0
         audio_path = ""
+        transcript_path = ""
         sample_rate = 16000
         is_monitor = False
 
@@ -79,10 +80,11 @@ class ASRServer:
                             if is_monitor:
                                 continue
                             audio_path = data.get("audio_path", "")
+                            transcript_path = data.get("transcript_path", "")
                             sample_rate = int(data.get("sample_rate", sample_rate) or sample_rate)
                             time_submit = time.time()
                             result = await self._process_audio(
-                                bytes(audio_buffer), task_id, time_start, time_submit, audio_path, sample_rate
+                                bytes(audio_buffer), task_id, time_start, time_submit, audio_path, sample_rate, transcript_path
                             )
                             if result:
                                 await websocket.send(json.dumps(result, ensure_ascii=False))
@@ -91,6 +93,7 @@ class ASRServer:
                             task_id = str(uuid.uuid4())
                             time_start = time.time()
                             audio_path = ""
+                            transcript_path = ""
                             sample_rate = 16000
 
                         elif msg_type == "audio_start":
@@ -149,6 +152,7 @@ class ASRServer:
         time_submit: float,
         audio_path: str = "",
         sample_rate: int = 16000,
+        transcript_path: str = "",
     ) -> Optional[dict]:
         try:
             loop = asyncio.get_event_loop()
@@ -162,8 +166,10 @@ class ASRServer:
                 "time_start": time_start,
                 "time_submit": time_submit,
                 "time_complete": time_complete,
+                "duration_seconds": round(time_complete - time_submit, 3),
                 "model": self._engine.model_name,
                 "audio_path": audio_path,
+                "transcript_path": transcript_path,
                 "sample_rate": sample_rate,
             }
         except Exception as e:
@@ -177,6 +183,7 @@ class ASRServer:
                 "time_submit": time_submit,
                 "time_complete": time.time(),
                 "audio_path": audio_path,
+                "transcript_path": transcript_path,
             }
 
 

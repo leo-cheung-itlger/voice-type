@@ -12,10 +12,11 @@
         <article v-for="entry in reversedHistory" :key="entry.task_id" class="history-item">
           <div class="item-meta">
             <span>{{ formatTime(entry.timestamp) }}</span>
-            <span>{{ entry.delay.toFixed(2) }}s</span>
+            <span>{{ formatDuration(entry) }}</span>
           </div>
           <p>{{ entry.text }}</p>
           <div v-if="entry.audio_path" class="path">{{ entry.audio_path }}</div>
+          <div v-if="entry.transcript_path" class="path">{{ entry.transcript_path }}</div>
           <div class="item-actions">
             <button class="btn btn-small btn-ghost" @click="store.copyToClipboard(entry.text)">复制</button>
             <button class="btn btn-small btn-ghost" @click="markEntry(entry)">标记</button>
@@ -46,6 +47,10 @@ function formatTime(ts: number): string {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function formatDuration(entry: HistoryEntry): string {
+  return `${Number(entry.duration_seconds ?? entry.delay ?? 0).toFixed(1)}s`
 }
 
 function markEntry(entry: HistoryEntry) {

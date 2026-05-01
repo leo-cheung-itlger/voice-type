@@ -44,13 +44,27 @@ class HistoryManager:
         except Exception as e:
             logger.error(f"Failed to save history: {e}")
 
-    def add_entry(self, text: str, task_id: str, delay: float, audio_path: str = "", model: str = ""):
+    def add_entry(
+        self,
+        text: str,
+        task_id: str,
+        delay: float,
+        audio_path: str = "",
+        model: str = "",
+        transcript_path: str = "",
+        duration_seconds: Optional[float] = None,
+    ):
+        duration = round(float(duration_seconds if duration_seconds is not None else delay), 3)
+        if not transcript_path and audio_path and os.path.basename(audio_path).lower() == "recording.wav":
+            transcript_path = os.path.join(os.path.dirname(audio_path), "result.json")
         entry = {
             "text": text,
             "task_id": task_id,
             "timestamp": time.time(),
-            "delay": round(delay, 3),
+            "delay": duration,
+            "duration_seconds": duration,
             "audio_path": audio_path,
+            "transcript_path": transcript_path,
             "model": model,
         }
         self._entries.append(entry)

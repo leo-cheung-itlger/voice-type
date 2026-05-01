@@ -1,12 +1,27 @@
 # CHANGELOG
 
+## 2026-05-01
+
+- Fixed bundled desktop API routing so Tauri/EXE builds use `http://127.0.0.1:55342/api` and `ws://127.0.0.1:55342/ws/recognition` instead of relying on the browser dev server proxy.
+- Added configurable short-press filtering with `client.min_press_seconds` defaulting to `0.1`; ignored presses are dropped before save, ASR submission, and history writes.
+- Added structured daily recording archives under `data/archive/YYYY/MM/DD/HHMMSS_<task_id>/`, with `recording.wav` and `result.json` for valid real-time dictation tasks.
+- Added model download URLs and `/api/models/{model_id}/open-folder`, plus Settings UI controls for missing-model downloads and opening the local model folder.
+- Improved Settings with debounced auto-save, shortcut capture from physical key presses, visible save state, short-press threshold, archive-root editing, and client restart action.
+- Updated latest/history result display and desktop notification success state to show recognition duration to one decimal place.
+- Validation: Python compile passed; frontend typecheck and production build passed; API health/config/models smoke passed; short-press and archive JSON behavior passed a programmatic client smoke; model folder API opened the model root; Settings page browser smoke loaded at `55343`; Tauri build passed with `CARGO_TARGET_DIR=frontend/src-tauri/target-codex-build` because the normal release EXE was locked by an old `voicetype.exe` process held under Everything.
+
 ## 2026-04-30
+
+- Completed the first Tauri desktop build after loading MSVC through `VsDevCmd.bat`; added generated Tauri icons and configured bundle icon paths.
+- Produced the release desktop executable and installers: `frontend/src-tauri/target/release/voicetype.exe`, `frontend/src-tauri/target/release/bundle/msi/VoiceType_0.1.0_x64_en-US.msi`, and `frontend/src-tauri/target/release/bundle/nsis/VoiceType_0.1.0_x64-setup.exe`.
+- Tightened Tauri dev server handling by enabling strict port behavior for Vite/Tauri dev, so desktop dev does not silently bind a different port when `55343` is already occupied.
+- Validation: `where link` succeeds inside `VsDevCmd.bat`; frontend typecheck and production build pass; `npm run desktop:build` passes; release `voicetype.exe` starts a `VoiceType` desktop window; `/api/status` reports managed ASR/client; `/api/hardware` reports CUDA-ready RTX 5070 Ti. Full tray click validation still needs manual interaction with the visible tray icon.
 
 - Added initial Tauri v2 desktop-shell scaffolding under `frontend/src-tauri/`, including a 480x720 main window, tray Show/Quit menu, close-to-tray behavior, and runtime start/stop hooks.
 - Added `scripts/start-runtime.ps1` so a desktop shell can start or reuse the Python API, ASR server, and recording client without launching a browser frontend.
 - Updated frontend API base resolution so bundled Tauri pages can call `http://127.0.0.1:55342/api` instead of a broken relative `/api` path.
 - Recorded the staged packaging strategy in ADR-0004: Tauri dev shell first, portable Windows alpha second, formal installer only after runtime and model behavior are stable.
-- Validation: frontend typecheck passed; frontend production build passed; `scripts/start-runtime.ps1` reported runtime ready with API/ASR/client already running. Tauri compile/package is pending dependency installation approval for `@tauri-apps/*` npm packages and Rust crates.
+- Validation: frontend typecheck passed; frontend production build passed; `scripts/start-runtime.ps1` reported runtime ready with API/ASR/client already running. `npm install` added Tauri npm dependencies and `npm run desktop:build` downloaded Rust crates, but Tauri build is blocked because Windows MSVC linker `link.exe` is missing; `where link`, `where vswhere`, and Visual Studio Installer `vswhere.exe` checks found no usable C++ Build Tools installation.
 
 - Installed CUDA-enabled PyTorch in the project `venv` and changed Qwen initialization so the internal Transformers model is moved to CUDA when `gpu_required=true`.
 - Added hard blocking for fake GPU paths: Qwen no longer silently falls back to CPU when GPU is required, and sherpa-onnx CUDA now fails clearly when the current environment lacks a CUDA execution provider.

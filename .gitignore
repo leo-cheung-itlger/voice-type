@@ -15,12 +15,16 @@ env/
 # Node / frontend
 frontend/node_modules/
 frontend/dist/
+frontend/src-tauri/target/
+frontend/src-tauri/target-codex-build/
+vs_BuildTools.exe
 frontend/.vite/
 frontend/.vite-temp/
 
 # Runtime data
 logs/
 data/recordings/
+data/archive/
 data/transcription_uploads/
 data/transcription_validation/
 data/*.json

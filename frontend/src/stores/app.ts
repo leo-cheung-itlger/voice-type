@@ -6,7 +6,9 @@ export interface HistoryEntry {
   task_id: string
   timestamp: number
   delay: number
+  duration_seconds?: number
   audio_path?: string
+  transcript_path?: string
   model?: string
   marked?: boolean
   marked_words_text?: string
@@ -36,6 +38,8 @@ export interface AppConfig {
     output_mode: 'clipboard' | 'keyboard' | 'hybrid'
     save_audio: boolean
     audio_dir: string
+    archive_root: string
+    min_press_seconds: number
     hotword_files: string[]
     notification_enabled: boolean
     notification_sound: boolean
@@ -55,6 +59,7 @@ export interface ModelEntry {
   backend?: string
   role?: string
   acceleration?: string
+  download_url?: string
   blocking_reason?: string
   gpu_required_supported?: boolean
   recommended_for?: string[]
@@ -162,12 +167,29 @@ export interface TranscriptionTask {
   error?: string
 }
 
+function isDevFrontendHost() {
+  const host = window.location.hostname
+  const port = window.location.port
+  return (host === '127.0.0.1' || host === 'localhost') && port === '55343'
+}
+
 const API_BASE = (() => {
   const configured = import.meta.env.VITE_API_BASE
   if (configured) return configured
   const protocol = window.location.protocol
   if (protocol !== 'http:' && protocol !== 'https:') return 'http://127.0.0.1:55342/api'
-  return '/api'
+  if (isDevFrontendHost()) return '/api'
+  return 'http://127.0.0.1:55342/api'
+})()
+
+const WS_RECOGNITION_URL = (() => {
+  const configured = import.meta.env.VITE_WS_RECOGNITION_URL
+  if (configured) return configured
+  if (isDevFrontendHost()) {
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    return `${protocol}://${window.location.host}/ws/recognition`
+  }
+  return 'ws://127.0.0.1:55342/ws/recognition'
 })()
 
 const defaultConfig: AppConfig = {
@@ -188,6 +210,8 @@ const defaultConfig: AppConfig = {
     output_mode: 'clipboard',
     save_audio: true,
     audio_dir: '',
+    archive_root: '',
+    min_press_seconds: 0.1,
     hotword_files: ['hot-zh.txt', 'hot-en.txt', 'hot-rule.txt'],
     notification_enabled: true,
     notification_sound: true,
@@ -457,6 +481,10 @@ export const useAppStore = defineStore('app', () => {
     await fetchModels()
   }
 
+  async function openModelFolder(model: string) {
+    return apiFetch(`/models/${encodeURIComponent(model)}/open-folder`, { method: 'POST' })
+  }
+
   async function applyAccelerationRecommendation() {
     const recommendation = accelerationRecommendation.value
     config.value.server.model = recommendation.model
@@ -489,6 +517,11 @@ export const useAppStore = defineStore('app', () => {
   async function stopClient() {
     await apiFetch('/client/stop', { method: 'POST' })
     await fetchStatus()
+  }
+
+  async function restartClient() {
+    await stopClient()
+    await startClient()
   }
 
   async function startAll() {
@@ -617,8 +650,7 @@ export const useAppStore = defineStore('app', () => {
 
   function connectRecognition() {
     if (ws.current && ws.current.readyState <= WebSocket.OPEN) return
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    ws.current = new WebSocket(`${protocol}://${window.location.host}/ws/recognition`)
+    ws.current = new WebSocket(WS_RECOGNITION_URL)
 
     ws.current.onopen = () => {
       wsConnected.value = true
@@ -629,12 +661,15 @@ export const useAppStore = defineStore('app', () => {
       const data = JSON.parse(event.data)
       if (data.type === 'result') {
         currentPartial.value = ''
+        const duration = Number(data.duration_seconds ?? data.delay ?? ((data.time_complete || 0) - (data.time_submit || 0)))
         const entry: HistoryEntry = {
           text: data.text || '',
           task_id: data.task_id || `${Date.now()}`,
           timestamp: data.timestamp || Date.now() / 1000,
-          delay: Number(data.delay ?? ((data.time_complete || 0) - (data.time_submit || 0))),
+          delay: duration,
+          duration_seconds: duration,
           audio_path: data.audio_path || '',
+          transcript_path: data.transcript_path || '',
           model: data.model || '',
         }
         if (!history.value.some((item) => item.task_id === entry.task_id)) {
@@ -675,8 +710,8 @@ export const useAppStore = defineStore('app', () => {
     config, models, logs, recentIssues, hotwordContent, selectedHotword,
     ffmpeg, llmConfig, transcriptions, hardware, benchmarks, benchmarkingModels, lastError,
     latestEntry, totalEntries, avgDelay, serviceLabel, selectedModel, accelerationState, accelerationRecommendation,
-    fetchStatus, fetchHealth, fetchConfig, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, applyAccelerationRecommendation,
-    startServer, stopServer, startClient, stopClient, startAll, stopAll,
+    fetchStatus, fetchHealth, fetchConfig, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, applyAccelerationRecommendation,
+    startServer, stopServer, startClient, stopClient, restartClient, startAll, stopAll,
     fetchHistory, clearHistory, deleteHistoryEntry, addErrorMark, fetchErrorMarks,
     fetchStats, fetchLogs, fetchHotword, saveHotword,
     fetchFfmpegStatus, fetchLlmConfig, saveLlmConfig,

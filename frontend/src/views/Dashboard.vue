@@ -84,7 +84,7 @@
       <div class="panel recent-list">
         <div v-for="entry in recentEntries" :key="entry.task_id" class="recent-item">
           <p>{{ entry.text }}</p>
-          <span>{{ entry.delay.toFixed(2) }}s</span>
+          <span>{{ formatDuration(entry) }}</span>
         </div>
         <div v-if="recentEntries.length === 0" class="empty">暂无识别记录</div>
       </div>
@@ -102,6 +102,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useAppStore } from '../stores/app'
+import type { HistoryEntry } from '../stores/app'
 
 const store = useAppStore()
 const recentEntries = computed(() => [...store.history].slice(-4).reverse())
@@ -136,6 +137,10 @@ async function toggleServer() {
 async function toggleClient() {
   if (store.clientRunning) await store.stopClient()
   else await store.startClient()
+}
+
+function formatDuration(entry: HistoryEntry) {
+  return `${Number(entry.duration_seconds ?? entry.delay ?? 0).toFixed(1)}s`
 }
 </script>
 

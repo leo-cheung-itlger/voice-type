@@ -36,8 +36,14 @@ class RecordingNotifier:
     def output_success(self):
         self._send("success")
 
+    def output_success_with_duration(self, seconds: float):
+        self._send(f"success:{seconds:.1f}")
+
     def output_failed(self, message: str = ""):
         self._send(f"failed:{message[:40]}")
+
+    def ignored_short_press(self, seconds: float):
+        self._send(f"ignored:{seconds:.2f}")
 
     def shutdown(self):
         self._send("quit")
@@ -141,9 +147,17 @@ class RecordingNotifier:
                         elif event == "success":
                             show("识别已输出", "#14532d")
                             hide_later()
+                        elif event.startswith("success:"):
+                            seconds = event.split(":", 1)[1]
+                            show(f"识别已输出 {seconds}s", "#14532d")
+                            hide_later()
                         elif event.startswith("failed:"):
                             message = event.split(":", 1)[1] or "识别失败"
                             show(message, "#7f1d1d")
+                            hide_later()
+                        elif event.startswith("ignored:"):
+                            seconds = event.split(":", 1)[1]
+                            show(f"已忽略短按 {seconds}s", "#374151")
                             hide_later()
                         elif event == "quit":
                             root.destroy()

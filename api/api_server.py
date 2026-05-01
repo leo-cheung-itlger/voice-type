@@ -61,6 +61,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+MODEL_DOWNLOAD_URLS = {
+    "qwen3-asr-0.6b": "https://huggingface.co/Qwen/Qwen3-ASR-0.6B",
+    "qwen3-asr-1.7b": "https://huggingface.co/Qwen/Qwen3-ASR-1.7B",
+    "qwen3-asr-1.7b-gguf-vulkan": "https://huggingface.co/ggml-org/Qwen3-ASR-1.7B-GGUF",
+    "funasr-nano": "https://huggingface.co/FunAudioLLM/Fun-ASR-Nano-2512",
+    "sensevoice": "https://huggingface.co/FunAudioLLM/SenseVoiceSmall",
+    "paraformer": "https://github.com/k2-fsa/sherpa-onnx/releases",
+}
+
 history = HistoryManager()
 transcriptions = TranscriptionManager()
 server_process: Optional[subprocess.Popen] = None
@@ -160,6 +169,8 @@ class ProcessManager:
             f"--output={config.output_mode}",
             f"--key={config.shortcut_key}",
             f"--audio-dir={config.audio_dir}",
+            f"--archive-root={config.archive_root}",
+            f"--min-press-seconds={config.min_press_seconds}",
         ]
         args.append("--save-audio" if config.save_audio else "--no-save-audio")
         args.append("--notify" if config.notification_enabled else "--no-notify")
@@ -466,6 +477,7 @@ def _model_entries() -> list:
             "backend": backend,
             "role": role,
             "acceleration": _default_acceleration_for_model(model),
+            "download_url": MODEL_DOWNLOAD_URLS.get(model, ""),
             "gpu_required_supported": not bool(blocking_reason),
             "blocking_reason": blocking_reason,
             "recommended_for": recommendation.get("recommended_for", {}).get(model, []),
@@ -780,6 +792,29 @@ async def get_models():
         "models_dir": MODELS_DIR,
         "model_roots": model_root_candidates(),
     }
+
+
+@app.post("/api/models/{model_id}/open-folder")
+async def open_model_folder(model_id: str):
+    if model_id not in MODEL_DIR_NAMES:
+        raise HTTPException(status_code=404, detail="Unknown model")
+    model_path = Path(resolve_model_dir(model_id))
+    target = model_path if model_path.exists() else model_path.parent
+    target = target.resolve()
+    allowed_roots = [Path(root).resolve() for root in model_root_candidates()]
+    if not any(target == root or root in target.parents for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="Model path is outside known model roots")
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(target))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target)])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to open folder: {exc}") from exc
+    return {"status": "opened", "path": str(target)}
 
 
 @app.get("/api/runtime/diagnostics")
@@ -1283,6 +1318,8 @@ async def ws_recognition(websocket: WebSocket):
                         delay=data.get("time_complete", 0) - data.get("time_submit", 0),
                         audio_path=data.get("audio_path", ""),
                         model=data.get("model", ""),
+                        transcript_path=data.get("transcript_path", ""),
+                        duration_seconds=data.get("duration_seconds"),
                     )
                     await websocket.send_json({"type": "result", **entry})
                 else:

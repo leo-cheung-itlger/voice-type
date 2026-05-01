@@ -3,7 +3,10 @@
     <section class="section">
       <div class="section-title">
         <span>运行设置</span>
-        <button class="btn btn-small btn-primary" @click="save">保存</button>
+        <div class="actions">
+          <span class="label">{{ saveState }}</span>
+          <button class="btn btn-small btn-primary" @click="save">保存</button>
+        </div>
       </div>
       <div class="panel">
         <label class="row setting-row">
@@ -20,16 +23,35 @@
         <label class="row setting-row">
           <span>
             <span class="value">快捷键</span>
-            <span class="label">当前测试推荐 right shift</span>
+            <span class="label">{{ captureMode ? '请按下要绑定的实体键' : '客户端重启后生效' }}</span>
           </span>
-          <input v-model="store.config.client.shortcut_key" class="field compact" />
+          <div class="inline-controls">
+            <button class="btn btn-small" :class="captureMode ? 'btn-primary' : 'btn-ghost'" @click="toggleCapture">
+              {{ captureMode ? '监听中' : store.config.client.shortcut_key }}
+            </button>
+            <input v-model="store.config.client.shortcut_key" class="field compact key-field" />
+          </div>
+        </label>
+        <label class="row setting-row">
+          <span>
+            <span class="value">短按忽略</span>
+            <span class="label">低于该时长不保存、不识别</span>
+          </span>
+          <input v-model.number="store.config.client.min_press_seconds" type="number" min="0" max="2" step="0.05" class="field compact" />
         </label>
         <label class="row setting-row">
           <span>
             <span class="value">保存录音</span>
-            <span class="label">写入 data/recordings</span>
+            <span class="label">写入结构化归档目录</span>
           </span>
           <input v-model="store.config.client.save_audio" type="checkbox" />
+        </label>
+        <label class="row setting-row">
+          <span>
+            <span class="value">归档目录</span>
+            <span class="label">按日期和任务保存 recording.wav/result.json</span>
+          </span>
+          <input v-model="store.config.client.archive_root" class="field path-field" />
         </label>
         <label class="row setting-row">
           <span>
@@ -63,6 +85,10 @@
             <option value="dml">DirectML</option>
           </select>
         </label>
+        <div class="restart-row">
+          <span class="label">快捷键、输出模式、录音参数等修改后，重启客户端才会完全生效。</span>
+          <button class="btn btn-small btn-ghost" @click="restartClient">重启客户端</button>
+        </div>
       </div>
     </section>
 
@@ -123,19 +149,25 @@
         <button class="btn btn-small btn-ghost" @click="refreshModels">刷新</button>
       </div>
       <div class="model-list">
-        <button
+        <div
           v-for="model in store.models"
           :key="model.id"
           class="model-row"
           :class="{ active: store.config.server.model === model.id }"
-          @click="store.selectModel(model.id)"
         >
           <span>
             <strong>{{ model.name }}</strong>
             <small>{{ modelSummary(model) }}</small>
           </span>
-          <span class="model-state" :class="{ ok: model.exists }">{{ model.exists ? 'OK' : 'MISS' }}</span>
-        </button>
+          <div class="model-actions">
+            <a v-if="!model.exists && model.download_url" class="btn btn-small btn-ghost" :href="model.download_url" target="_blank" rel="noreferrer">下载</a>
+            <button class="btn btn-small btn-ghost" @click="store.openModelFolder(model.id)">打开</button>
+            <button class="btn btn-small" :class="store.config.server.model === model.id ? 'btn-primary' : 'btn-ghost'" @click="store.selectModel(model.id)">
+              {{ store.config.server.model === model.id ? '已选' : '选择' }}
+            </button>
+            <span class="model-state" :class="{ ok: model.exists }">{{ model.exists ? 'OK' : 'MISS' }}</span>
+          </div>
+        </div>
       </div>
       <div class="benchmark-actions">
         <button
@@ -173,11 +205,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { type ModelEntry, useAppStore } from '../stores/app'
 
 const store = useAppStore()
 const benchmarking = ref(false)
+const captureMode = ref(false)
+const saveState = ref('自动保存')
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+let saveStarted = false
 
 const gpuLabel = computed(() => {
   const gpus = store.hardware?.gpus || []
@@ -202,8 +238,52 @@ const benchmarkHint = computed(() => {
 })
 
 async function save() {
+  saveState.value = '保存中'
   await store.saveConfig()
   await Promise.all([store.fetchStatus(), store.fetchModels()])
+  saveState.value = store.lastError ? '保存失败' : '已保存'
+}
+
+function queueSave() {
+  if (!saveStarted) return
+  saveState.value = '等待保存'
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => {
+    save().catch(() => {
+      saveState.value = '保存失败'
+    })
+  }, 700)
+}
+
+function toggleCapture() {
+  captureMode.value = !captureMode.value
+}
+
+function normalizeKey(event: KeyboardEvent) {
+  if (event.code === 'ShiftRight') return 'right shift'
+  if (event.code === 'ShiftLeft') return 'left shift'
+  if (event.code === 'ControlRight') return 'right ctrl'
+  if (event.code === 'ControlLeft') return 'left ctrl'
+  if (event.code === 'AltRight') return 'right alt'
+  if (event.code === 'AltLeft') return 'left alt'
+  if (event.code === 'CapsLock') return 'caps lock'
+  if (/^F\d{1,2}$/.test(event.code)) return event.code.toLowerCase()
+  if (/^Key[A-Z]$/.test(event.code)) return event.code.slice(3).toLowerCase()
+  if (/^Digit\d$/.test(event.code)) return event.code.slice(5)
+  return event.key.toLowerCase().replace(/\s+/g, ' ')
+}
+
+function onCaptureKeydown(event: KeyboardEvent) {
+  if (!captureMode.value) return
+  event.preventDefault()
+  event.stopPropagation()
+  store.config.client.shortcut_key = normalizeKey(event)
+  captureMode.value = false
+}
+
+async function restartClient() {
+  await save()
+  await store.restartClient()
 }
 
 function modelSummary(model: ModelEntry) {
@@ -279,7 +359,21 @@ onMounted(() => {
   store.fetchHardware()
   store.fetchBenchmarks()
   store.fetchLogs()
+  window.addEventListener('keydown', onCaptureKeydown, true)
+  window.setTimeout(() => {
+    saveStarted = true
+  }, 800)
 })
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onCaptureKeydown, true)
+  if (saveTimer) clearTimeout(saveTimer)
+})
+
+watch(
+  () => JSON.stringify(store.config),
+  () => queueSave(),
+)
 </script>
 
 <style scoped>
@@ -288,8 +382,25 @@ onMounted(() => {
   gap: 3px;
 }
 
+.actions,
+.inline-controls,
+.model-actions,
+.restart-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .compact {
   width: 150px;
+}
+
+.key-field {
+  width: 112px;
+}
+
+.path-field {
+  width: min(230px, 48vw);
 }
 
 input[type="checkbox"] {
@@ -303,6 +414,12 @@ input[type="checkbox"] {
   gap: 8px;
 }
 
+.restart-row {
+  justify-content: space-between;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
 .model-row {
   display: flex;
   align-items: center;
@@ -314,7 +431,6 @@ input[type="checkbox"] {
   border-radius: 12px;
   color: var(--text);
   background: var(--panel);
-  cursor: pointer;
   text-align: left;
 }
 
@@ -330,6 +446,14 @@ input[type="checkbox"] {
 .model-row small {
   margin-top: 3px;
   color: var(--muted);
+}
+
+.model-actions {
+  flex: 0 0 auto;
+}
+
+.model-actions .btn {
+  min-width: 0;
 }
 
 .model-state {

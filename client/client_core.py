@@ -36,6 +36,7 @@ class VoiceClient:
         self._running = False
         self._recording = False
         self._processing = False
+        self._key_down_at = 0.0
         self._send_queue: "asyncio.Queue[dict]" = asyncio.Queue()
         self._heartbeat_task: Optional[asyncio.Task] = None
 
@@ -189,6 +190,7 @@ class VoiceClient:
             return
 
         self._recording = True
+        self._key_down_at = time.monotonic()
         logger.info("Key pressed, starting recording")
 
         if not self._recorder.start():
@@ -212,28 +214,57 @@ class VoiceClient:
         logger.info("Key released, stopping recording")
 
         audio_data = self._recorder.stop()
-        self._notifier.recording_finished()
-        audio_path = ""
+        held_seconds = max(time.monotonic() - self._key_down_at, 0.0)
+        min_press_seconds = max(float(self._config.min_press_seconds or 0), 0.0)
+        if held_seconds < min_press_seconds:
+            logger.info(
+                "Shortcut press ignored as too short: %.3fs < %.3fs",
+                held_seconds,
+                min_press_seconds,
+            )
+            self._notifier.ignored_short_press(held_seconds)
+            return
 
-        if self._config.save_audio and audio_data:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            audio_path = os.path.join(self._config.audio_dir, f"{timestamp}.wav")
-            self._recorder.save_wav(audio_path, audio_data)
+        self._notifier.recording_finished()
 
         if not audio_data:
             self._notifier.output_failed("没有录到音频")
             return
+
+        task_id = str(uuid.uuid4())
+        archive_dir = self._archive_dir(task_id)
+        audio_path = ""
+        transcript_path = os.path.join(archive_dir, "result.json")
+
+        if self._config.save_audio:
+            audio_path = os.path.join(archive_dir, "recording.wav")
+            self._recorder.save_wav(audio_path, audio_data)
 
         queued_count = self._send_queue.qsize() + (1 if self._processing else 0)
         if queued_count:
             self._notifier.queued(queued_count + 1)
 
         await self._send_queue.put({
-            "task_id": str(uuid.uuid4()),
+            "task_id": task_id,
             "audio_data": audio_data,
             "audio_path": audio_path,
+            "transcript_path": transcript_path,
             "sample_rate": self._config.sample_rate,
         })
+
+    def _archive_dir(self, task_id: str) -> str:
+        now = time.localtime()
+        timestamp = time.strftime("%H%M%S", now)
+        short_id = task_id.split("-", 1)[0]
+        path = os.path.join(
+            self._config.archive_root,
+            time.strftime("%Y", now),
+            time.strftime("%m", now),
+            time.strftime("%d", now),
+            f"{timestamp}_{short_id}",
+        )
+        os.makedirs(path, exist_ok=True)
+        return path
 
     async def _request_worker(self):
         while self._running:
@@ -257,7 +288,8 @@ class VoiceClient:
 
                 delay = result.get("time_complete", 0) - result.get("time_submit", 0)
                 logger.info(f"Result: {text} (delay: {delay:.2f}s)")
-                self._notifier.output_success()
+                self._write_result_json(item, result, text, delay)
+                self._notifier.output_success_with_duration(delay)
             except Exception as e:
                 logger.error(f"Recognition request failed: {e}")
                 self._notifier.output_failed("识别失败")
@@ -274,6 +306,30 @@ class VoiceClient:
             seconds = int(time.time() - started)
             if seconds >= 3:
                 self._notifier.analysis_tick(seconds)
+
+    def _write_result_json(self, item: dict, result: dict, text: str, delay: float):
+        transcript_path = item.get("transcript_path") or ""
+        if not transcript_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(transcript_path), exist_ok=True)
+            payload = {
+                "task_id": item.get("task_id", ""),
+                "text": text,
+                "duration_seconds": round(delay, 3),
+                "audio_path": item.get("audio_path", ""),
+                "transcript_path": transcript_path,
+                "model": result.get("model", ""),
+                "output_mode": self._config.output_mode,
+                "sample_rate": item.get("sample_rate", self._config.sample_rate),
+                "time_start": result.get("time_start"),
+                "time_submit": result.get("time_submit"),
+                "time_complete": result.get("time_complete"),
+            }
+            with open(transcript_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to write transcript result JSON: {e}")
 
     async def _recognize_item(self, item: dict) -> dict:
         async with websockets.connect(
@@ -296,6 +352,7 @@ class VoiceClient:
             await ws.send(json.dumps({
                 "type": "audio_end",
                 "audio_path": item["audio_path"],
+                "transcript_path": item.get("transcript_path", ""),
                 "sample_rate": item["sample_rate"],
             }, ensure_ascii=False))
             message = await ws.recv()
@@ -332,6 +389,10 @@ def main():
             config.shortcut_key = arg.split("=", 1)[1]
         elif arg.startswith("--audio-dir="):
             config.audio_dir = arg.split("=", 1)[1]
+        elif arg.startswith("--archive-root="):
+            config.archive_root = arg.split("=", 1)[1]
+        elif arg.startswith("--min-press-seconds="):
+            config.min_press_seconds = float(arg.split("=", 1)[1])
         elif arg == "--save-audio":
             config.save_audio = True
         elif arg == "--no-save-audio":
