@@ -259,6 +259,8 @@ export const useAppStore = defineStore('app', () => {
   })
   const transcriptions = ref<TranscriptionTask[]>([])
   const lastError = ref('')
+  const toastMessage = ref('')
+  let toastTimer: ReturnType<typeof setTimeout> | null = null
   const ws: { current: WebSocket | null } = { current: null }
 
   const latestEntry = computed(() => history.value[history.value.length - 1] || null)
@@ -699,15 +701,32 @@ export const useAppStore = defineStore('app', () => {
     wsConnected.value = false
   }
 
-  function copyToClipboard(text: string) {
-    navigator.clipboard?.writeText(text)
+  function showToast(message: string) {
+    toastMessage.value = message
+    if (toastTimer) clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => {
+      toastMessage.value = ''
+    }, 1200)
+  }
+
+  async function copyToClipboard(text: string) {
+    if (!text) return false
+    try {
+      await navigator.clipboard?.writeText(text)
+      showToast('已复制')
+      return true
+    } catch (error) {
+      lastError.value = error instanceof Error ? error.message : String(error)
+      showToast('复制失败')
+      return false
+    }
   }
 
   return {
     serverRunning, clientRunning, serverPid, clientPid, serverManaged, clientManaged,
     serverPortOpen, serverConflict, clientConflict, serverProcessCount, clientProcessCount,
     history, errorMarks, wsConnected, currentPartial, topWords,
-    config, models, logs, recentIssues, hotwordContent, selectedHotword,
+    config, models, logs, recentIssues, hotwordContent, selectedHotword, toastMessage,
     ffmpeg, llmConfig, transcriptions, hardware, benchmarks, benchmarkingModels, lastError,
     latestEntry, totalEntries, avgDelay, serviceLabel, selectedModel, accelerationState, accelerationRecommendation,
     fetchStatus, fetchHealth, fetchConfig, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, applyAccelerationRecommendation,
@@ -716,6 +735,6 @@ export const useAppStore = defineStore('app', () => {
     fetchStats, fetchLogs, fetchHotword, saveHotword,
     fetchFfmpegStatus, fetchLlmConfig, saveLlmConfig,
     fetchTranscriptions, createTranscription, uploadTranscription, cancelTranscription,
-    connectRecognition, disconnectRecognition, copyToClipboard,
+    connectRecognition, disconnectRecognition, copyToClipboard, showToast,
   }
 })

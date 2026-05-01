@@ -2,6 +2,13 @@
 
 ## 2026-05-01
 
+- Reworked the recording client's global shortcut listener from polling to an event-based `keyboard.hook()` path, with normalized shortcut names for `caps_lock`, `left_shift`, `right_shift`, `shift`, and related control keys.
+- Added shortcut-change confirmation in Settings: manual save now prompts to restart the recording client immediately when the shortcut changed, while autosave keeps persisting settings quietly.
+- Fixed desktop-window responsiveness by allowing the Vue shell to fill the full Tauri/browser viewport and by preventing child rows/panels from forcing horizontal overflow.
+- Changed Dashboard to show the latest 10 recognition records; Dashboard and History rows can now be clicked to copy their text and show a short "已复制" toast.
+- Improved history text/path wrapping so long recognition text and paths wrap inside the panel instead of forcing horizontal scrolling.
+- Validation: Python compile passed; hotkey normalization smoke passed for legacy and snake_case Caps Lock/Shift names; frontend typecheck and production build passed; browser smoke at `380x560` and `900x720` showed no horizontal page scroll and no console errors; Tauri build passed with `CARGO_TARGET_DIR=frontend/src-tauri/target-codex-build3`. The normal `target/release/voicetype.exe` path is still locked by no-path `voicetype.exe` processes that this non-admin shell cannot terminate.
+
 - Fixed bundled desktop API routing so Tauri/EXE builds use `http://127.0.0.1:55342/api` and `ws://127.0.0.1:55342/ws/recognition` instead of relying on the browser dev server proxy.
 - Added configurable short-press filtering with `client.min_press_seconds` defaulting to `0.1`; ignored presses are dropped before save, ASR submission, and history writes.
 - Added structured daily recording archives under `data/archive/YYYY/MM/DD/HHMMSS_<task_id>/`, with `recording.wav` and `result.json` for valid real-time dictation tasks.

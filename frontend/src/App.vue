@@ -28,6 +28,8 @@
       <router-link to="/stats" class="tab">统计</router-link>
       <router-link to="/settings" class="tab">设置</router-link>
     </nav>
+
+    <div v-if="store.toastMessage" class="toast">{{ store.toastMessage }}</div>
   </main>
 </template>
 

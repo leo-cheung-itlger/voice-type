@@ -20,6 +20,72 @@ from client.recorder import AudioRecorder
 logger = setup_logger("client_core")
 
 
+KEY_ALIASES = {
+    "caps lock": "caps_lock",
+    "caps_lock": "caps_lock",
+    "capslock": "caps_lock",
+    "shift": "shift",
+    "left shift": "left_shift",
+    "left_shift": "left_shift",
+    "right shift": "right_shift",
+    "right_shift": "right_shift",
+    "ctrl": "ctrl",
+    "control": "ctrl",
+    "left ctrl": "left_ctrl",
+    "left_ctrl": "left_ctrl",
+    "right ctrl": "right_ctrl",
+    "right_ctrl": "right_ctrl",
+    "alt": "alt",
+    "left alt": "left_alt",
+    "left_alt": "left_alt",
+    "right alt": "right_alt",
+    "right_alt": "right_alt",
+}
+
+SCAN_CODE_KEYS = {
+    42: "left_shift",
+    54: "right_shift",
+    29: "left_ctrl",
+    97: "right_ctrl",
+    56: "left_alt",
+    100: "right_alt",
+    58: "caps_lock",
+}
+
+
+def normalize_shortcut_key(key: str) -> str:
+    normalized = (key or "").strip().lower().replace("-", "_")
+    normalized = " ".join(normalized.replace("_", " ").split())
+    alias = KEY_ALIASES.get(normalized)
+    if alias:
+        return alias
+    return normalized.replace(" ", "_")
+
+
+def normalize_keyboard_event_key(name: str, scan_code: Optional[int] = None) -> str:
+    if scan_code in SCAN_CODE_KEYS:
+        return SCAN_CODE_KEYS[scan_code]
+    return normalize_shortcut_key(name)
+
+
+def shortcut_matches(configured: str, event_key: str) -> bool:
+    shortcut = normalize_shortcut_key(configured)
+    key = normalize_shortcut_key(event_key)
+    if shortcut == key:
+        return True
+    if shortcut == "shift" and key in ("left_shift", "right_shift"):
+        return True
+    if shortcut == "ctrl" and key in ("left_ctrl", "right_ctrl"):
+        return True
+    if shortcut == "alt" and key in ("left_alt", "right_alt"):
+        return True
+    return False
+
+
+def display_shortcut_key(key: str) -> str:
+    return normalize_shortcut_key(key).replace("_", " ")
+
+
 class VoiceClient:
     def __init__(self, config: ClientConfig):
         self._config = config
@@ -37,6 +103,8 @@ class VoiceClient:
         self._recording = False
         self._processing = False
         self._key_down_at = 0.0
+        self._pressed_shortcut = False
+        self._keyboard_hook = None
         self._send_queue: "asyncio.Queue[dict]" = asyncio.Queue()
         self._heartbeat_task: Optional[asyncio.Task] = None
 
@@ -170,20 +238,54 @@ class VoiceClient:
     async def _keyboard_loop(self):
         import keyboard as kb
 
-        shortcut = self._config.shortcut_key
-        logger.info(f"Listening for shortcut key: {shortcut}")
+        loop = asyncio.get_running_loop()
+        shortcut = normalize_shortcut_key(self._config.shortcut_key)
+        logger.info(
+            "Listening for shortcut key via global hook: raw=%s normalized=%s",
+            self._config.shortcut_key,
+            shortcut,
+        )
 
-        pressed = False
+        def schedule(callback):
+            if not self._running:
+                return
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(callback()))
 
-        while self._running:
-            if kb.is_pressed(shortcut) and not pressed:
-                pressed = True
-                await self._on_key_down()
-            elif not kb.is_pressed(shortcut) and pressed:
-                pressed = False
-                await self._on_key_up()
+        def on_keyboard_event(event):
+            event_key = normalize_keyboard_event_key(
+                getattr(event, "name", "") or "",
+                getattr(event, "scan_code", None),
+            )
+            if not shortcut_matches(shortcut, event_key):
+                return
+            event_type = getattr(event, "event_type", "")
+            if event_type == "down" and not self._pressed_shortcut:
+                self._pressed_shortcut = True
+                logger.info("Shortcut down: configured=%s event=%s", shortcut, event_key)
+                schedule(self._on_key_down)
+            elif event_type == "up" and self._pressed_shortcut:
+                self._pressed_shortcut = False
+                logger.info("Shortcut up: configured=%s event=%s", shortcut, event_key)
+                schedule(self._on_key_up)
 
-            await asyncio.sleep(0.01)
+        try:
+            self._keyboard_hook = kb.hook(on_keyboard_event, suppress=False)
+            logger.info("Global keyboard hook started")
+            while self._running:
+                await asyncio.sleep(0.2)
+        except Exception as e:
+            logger.error(f"Global keyboard hook failed: {e}")
+            self._notifier.output_failed("快捷键监听失败，可能需要管理员权限")
+            while self._running:
+                await asyncio.sleep(1)
+        finally:
+            if self._keyboard_hook is not None:
+                try:
+                    kb.unhook(self._keyboard_hook)
+                except Exception:
+                    pass
+                self._keyboard_hook = None
+            logger.info("Global keyboard hook stopped")
 
     async def _on_key_down(self):
         if self._recording:
@@ -369,6 +471,7 @@ class VoiceClient:
             await self._ws.close()
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
+        self._pressed_shortcut = False
         self._notifier.shutdown()
         logger.info("VoiceClient stopped")
 
@@ -386,7 +489,7 @@ def main():
         elif arg.startswith("--output="):
             config.output_mode = arg.split("=", 1)[1]
         elif arg.startswith("--key="):
-            config.shortcut_key = arg.split("=", 1)[1]
+            config.shortcut_key = normalize_shortcut_key(arg.split("=", 1)[1])
         elif arg.startswith("--audio-dir="):
             config.audio_dir = arg.split("=", 1)[1]
         elif arg.startswith("--archive-root="):

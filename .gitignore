@@ -16,7 +16,7 @@ env/
 frontend/node_modules/
 frontend/dist/
 frontend/src-tauri/target/
-frontend/src-tauri/target-codex-build/
+frontend/src-tauri/target-codex-build*/
 vs_BuildTools.exe
 frontend/.vite/
 frontend/.vite-temp/

@@ -5,7 +5,7 @@
         <span>运行设置</span>
         <div class="actions">
           <span class="label">{{ saveState }}</span>
-          <button class="btn btn-small btn-primary" @click="save">保存</button>
+          <button class="btn btn-small btn-primary" @click="save(true)">保存</button>
         </div>
       </div>
       <div class="panel">
@@ -27,7 +27,7 @@
           </span>
           <div class="inline-controls">
             <button class="btn btn-small" :class="captureMode ? 'btn-primary' : 'btn-ghost'" @click="toggleCapture">
-              {{ captureMode ? '监听中' : store.config.client.shortcut_key }}
+              {{ captureMode ? '监听中' : displayShortcut(store.config.client.shortcut_key) }}
             </button>
             <input v-model="store.config.client.shortcut_key" class="field compact key-field" />
           </div>
@@ -201,6 +201,17 @@
         <div v-if="store.logs.length === 0" class="empty">暂无日志</div>
       </div>
     </section>
+
+    <div v-if="restartPrompt" class="modal-backdrop">
+      <div class="modal">
+        <div class="value">快捷键设置已更改</div>
+        <p class="label">是否立即自动重启录音客户端以使其生效？</p>
+        <div class="modal-actions">
+          <button class="btn btn-primary" @click="confirmRestartNow">立即重启</button>
+          <button class="btn btn-ghost" @click="dismissRestartPrompt">稍后手动重启</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -212,6 +223,8 @@ const store = useAppStore()
 const benchmarking = ref(false)
 const captureMode = ref(false)
 const saveState = ref('自动保存')
+const restartPrompt = ref(false)
+const activeClientShortcut = ref('')
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let saveStarted = false
 
@@ -237,11 +250,14 @@ const benchmarkHint = computed(() => {
   return `最近耗时 ${Number(result.recognition_seconds || result.inference_seconds || 0).toFixed(2)}s · ${result.acceleration || 'unknown'}`
 })
 
-async function save() {
+async function save(promptRestart = false) {
   saveState.value = '保存中'
   await store.saveConfig()
   await Promise.all([store.fetchStatus(), store.fetchModels()])
   saveState.value = store.lastError ? '保存失败' : '已保存'
+  if (promptRestart && !store.lastError && activeClientShortcut.value && normalizeShortcut(store.config.client.shortcut_key) !== activeClientShortcut.value) {
+    restartPrompt.value = true
+  }
 }
 
 function queueSave() {
@@ -249,7 +265,7 @@ function queueSave() {
   saveState.value = '等待保存'
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
-    save().catch(() => {
+    save(false).catch(() => {
       saveState.value = '保存失败'
     })
   }, 700)
@@ -260,17 +276,29 @@ function toggleCapture() {
 }
 
 function normalizeKey(event: KeyboardEvent) {
-  if (event.code === 'ShiftRight') return 'right shift'
-  if (event.code === 'ShiftLeft') return 'left shift'
-  if (event.code === 'ControlRight') return 'right ctrl'
-  if (event.code === 'ControlLeft') return 'left ctrl'
-  if (event.code === 'AltRight') return 'right alt'
-  if (event.code === 'AltLeft') return 'left alt'
-  if (event.code === 'CapsLock') return 'caps lock'
+  if (event.code === 'ShiftRight') return 'right_shift'
+  if (event.code === 'ShiftLeft') return 'left_shift'
+  if (event.code === 'ControlRight') return 'right_ctrl'
+  if (event.code === 'ControlLeft') return 'left_ctrl'
+  if (event.code === 'AltRight') return 'right_alt'
+  if (event.code === 'AltLeft') return 'left_alt'
+  if (event.code === 'CapsLock') return 'caps_lock'
   if (/^F\d{1,2}$/.test(event.code)) return event.code.toLowerCase()
   if (/^Key[A-Z]$/.test(event.code)) return event.code.slice(3).toLowerCase()
   if (/^Digit\d$/.test(event.code)) return event.code.slice(5)
-  return event.key.toLowerCase().replace(/\s+/g, ' ')
+  return normalizeShortcut(event.key)
+}
+
+function normalizeShortcut(value: string) {
+  return (value || '').trim().toLowerCase().replace(/[-\s]+/g, '_')
+}
+
+function displayShortcut(value: string) {
+  return normalizeShortcut(value)
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.length === 1 ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1))
+    .join(' ')
 }
 
 function onCaptureKeydown(event: KeyboardEvent) {
@@ -282,8 +310,20 @@ function onCaptureKeydown(event: KeyboardEvent) {
 }
 
 async function restartClient() {
-  await save()
+  await save(false)
   await store.restartClient()
+  activeClientShortcut.value = normalizeShortcut(store.config.client.shortcut_key)
+  restartPrompt.value = false
+}
+
+async function confirmRestartNow() {
+  await store.restartClient()
+  activeClientShortcut.value = normalizeShortcut(store.config.client.shortcut_key)
+  restartPrompt.value = false
+}
+
+function dismissRestartPrompt() {
+  restartPrompt.value = false
 }
 
 function modelSummary(model: ModelEntry) {
@@ -353,8 +393,9 @@ async function applyRecommendation() {
   await store.applyAccelerationRecommendation()
 }
 
-onMounted(() => {
-  store.fetchConfig()
+onMounted(async () => {
+  await store.fetchConfig()
+  activeClientShortcut.value = normalizeShortcut(store.config.client.shortcut_key)
   store.fetchModels()
   store.fetchHardware()
   store.fetchBenchmarks()
@@ -535,6 +576,33 @@ input[type="checkbox"] {
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 10px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.modal {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 340px);
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.modal-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
 
 .logs {

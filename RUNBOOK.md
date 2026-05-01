@@ -104,7 +104,7 @@ set CARGO_TARGET_DIR=C:\Users\13678\Documents\.Projects\voice-type\frontend\src-
 cmd /c "\"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat\" -arch=x64 && cd /d C:\Users\13678\Documents\.Projects\voice-type\frontend && npm run desktop:build"
 ```
 
-The temporary EXE is written to `frontend\src-tauri\target-codex-build\release\voicetype.exe`.
+The temporary EXE is written to `frontend\src-tauri\target-codex-build\release\voicetype.exe`. Additional temporary targets matching `frontend\src-tauri\target-codex-build*` are ignored by Git.
 
 ## Validation Order
 
@@ -216,6 +216,14 @@ For daily ASR changes:
 6. Restart server/client and confirm status recovers.
 7. If recording notifications are enabled, confirm a topmost desktop prompt and a short beep appear on start and finish.
 
+Special-key shortcut checks:
+
+1. Use Settings to record or enter `caps_lock`, click Save, then choose whether to restart the recording client.
+2. After the client restarts, hold Caps Lock longer than `client.min_press_seconds` and confirm the client log contains hook startup plus shortcut down/up events.
+3. Repeat with `right_shift`; right Shift should trigger, left Shift should not.
+4. Repeat with aggregate `shift`; both left and right Shift should trigger.
+5. Tap faster than the threshold and confirm the log records an ignored short press with no ASR submission.
+
 Short-press and archive checks:
 
 1. Confirm `/api/config` exposes `client.min_press_seconds` and `client.archive_root`.
@@ -223,6 +231,14 @@ Short-press and archive checks:
 3. Hold the shortcut longer than the threshold; the task should create `data\archive\YYYY\MM\DD\HHMMSS_<task_id>\recording.wav` and `result.json`.
 4. The topmost prompt should move from recording to analyzing with seconds, then success with a one-decimal duration.
 5. History and Dashboard should show the result duration to one decimal place.
+
+History and layout checks:
+
+1. Dashboard should show the latest 10 records when available.
+2. Left-clicking a Dashboard or History row should copy that row's text and show the `已复制` toast.
+3. Delete, mark, and other row buttons must not trigger row copy.
+4. Test `380x560`, `480x720`, and `900x720`; the shell should fill the viewport and `document.documentElement.scrollWidth` should not exceed `clientWidth`.
+5. Long history text and path fields should wrap inside their panel without horizontal page scrolling.
 
 If a step cannot run because local model files, microphone access, GPU, or OS interaction is unavailable, record the exact blocked step and the manual command needed.
 

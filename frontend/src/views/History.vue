@@ -9,7 +9,7 @@
         </div>
       </div>
       <div class="history-list">
-        <article v-for="entry in reversedHistory" :key="entry.task_id" class="history-item">
+        <article v-for="entry in reversedHistory" :key="entry.task_id" class="history-item" @click="store.copyToClipboard(entry.text)">
           <div class="item-meta">
             <span>{{ formatTime(entry.timestamp) }}</span>
             <span>{{ formatDuration(entry) }}</span>
@@ -18,11 +18,11 @@
           <div v-if="entry.audio_path" class="path">{{ entry.audio_path }}</div>
           <div v-if="entry.transcript_path" class="path">{{ entry.transcript_path }}</div>
           <div class="item-actions">
-            <button class="btn btn-small btn-ghost" @click="store.copyToClipboard(entry.text)">复制</button>
-            <button class="btn btn-small btn-ghost" @click="markEntry(entry)">标记</button>
-            <button class="btn btn-small btn-ghost" @click="store.deleteHistoryEntry(entry.task_id)">删除</button>
+            <button class="btn btn-small btn-ghost" @click.stop="store.copyToClipboard(entry.text)">复制</button>
+            <button class="btn btn-small btn-ghost" @click.stop="markEntry(entry)">标记</button>
+            <button class="btn btn-small btn-ghost" @click.stop="store.deleteHistoryEntry(entry.task_id)">删除</button>
           </div>
-          <div v-if="entry.marked" class="mark-row">
+          <div v-if="entry.marked" class="mark-row" @click.stop>
             <input v-model="entry.marked_words_text" class="field" placeholder="错误字词或修正建议" />
             <button class="btn btn-small btn-primary" @click="submitMark(entry)">保存</button>
           </div>
@@ -82,10 +82,12 @@ onMounted(() => store.fetchHistory())
 }
 
 .history-item {
+  min-width: 0;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel);
+  cursor: pointer;
 }
 
 .item-meta {
@@ -98,21 +100,25 @@ onMounted(() => store.fetchHistory())
 }
 
 .history-item p {
+  min-width: 0;
   font-size: 15px;
   line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: normal;
   word-break: break-word;
 }
 
 .path {
   margin-top: 7px;
-  overflow: hidden;
   color: var(--faint);
   font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .item-actions {
+  flex-wrap: wrap;
   margin-top: 10px;
 }
 

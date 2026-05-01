@@ -82,10 +82,10 @@
         <button v-if="store.latestEntry" class="btn btn-small btn-ghost" @click="store.copyToClipboard(store.latestEntry.text)">复制最新</button>
       </div>
       <div class="panel recent-list">
-        <div v-for="entry in recentEntries" :key="entry.task_id" class="recent-item">
+        <button v-for="entry in recentEntries" :key="entry.task_id" class="recent-item" @click="store.copyToClipboard(entry.text)">
           <p>{{ entry.text }}</p>
           <span>{{ formatDuration(entry) }}</span>
-        </div>
+        </button>
         <div v-if="recentEntries.length === 0" class="empty">暂无识别记录</div>
       </div>
     </section>
@@ -105,7 +105,7 @@ import { useAppStore } from '../stores/app'
 import type { HistoryEntry } from '../stores/app'
 
 const store = useAppStore()
-const recentEntries = computed(() => [...store.history].slice(-4).reverse())
+const recentEntries = computed(() => [...store.history].slice(-10).reverse())
 const serverLabel = computed(() => {
   if (store.serverConflict) return `发现 ${store.serverProcessCount} 个实例或端口冲突`
   if (store.serverRunning && store.serverManaged) return `托管运行 PID ${store.serverPid || '-'}`
@@ -234,11 +234,16 @@ function formatDuration(entry: HistoryEntry) {
 }
 
 .recent-item {
+  width: 100%;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 10px;
   padding: 11px 13px;
   border-bottom: 1px solid var(--line);
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
 }
 
 .recent-item:last-child {
@@ -246,10 +251,11 @@ function formatDuration(entry: HistoryEntry) {
 }
 
 .recent-item p {
-  overflow: hidden;
+  min-width: 0;
   font-size: 14px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .recent-item span,
