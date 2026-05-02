@@ -2,6 +2,11 @@
 
 ## 2026-05-02
 
+- Fixed startup race where `/api/start-all` launched the recording client before the ASR WebSocket was actually listening; it now waits for ASR readiness before starting the client.
+- Added per-recognition WebSocket connect retry in the client so recordings made during ASR warm-up wait briefly instead of failing immediately with `[WinError 1225]`.
+- Changed the current runtime configuration back to `caps_lock`; validation confirmed the client log reports `raw=caps_lock normalized=caps_lock`.
+- Validation: Python compile passed; frontend typecheck/build passed; clean runtime restart returned managed server/client; service fixture ASR smoke passed 1/1 with a non-empty transcript.
+
 - Promoted the desktop shell to version `1.0.0` across Tauri and Cargo, and added a portable release helper that creates `dist/releases/VoiceType-1.0.0/VoiceType-1.0.0-portable.exe`.
 - Added Tauri single-instance handling so repeat launches focus the existing window instead of starting another runtime; tray creation now uses the configured app icon explicitly.
 - Added Tauri runtime diagnostics and restart commands, plus a frontend diagnostic strip that replaces raw `Failed to fetch` with the API URL and a runtime restart action.

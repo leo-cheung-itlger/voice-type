@@ -149,6 +149,26 @@ class ProcessManager:
             return False
 
     @staticmethod
+    async def wait_server_ready(timeout_seconds: float = 180.0) -> dict:
+        config = load_app_config().server
+        started = time.monotonic()
+        while time.monotonic() - started < timeout_seconds:
+            server = ProcessManager.check_server_health()
+            if server.get("running") and server.get("port_open"):
+                return {
+                    "ready": True,
+                    "elapsed_seconds": round(time.monotonic() - started, 2),
+                    "server": server,
+                }
+            await asyncio.sleep(1)
+        return {
+            "ready": False,
+            "elapsed_seconds": round(time.monotonic() - started, 2),
+            "server": ProcessManager.check_server_health(),
+            "message": f"ASR server did not become ready on port {config.port} within {timeout_seconds:.0f}s.",
+        }
+
+    @staticmethod
     def _server_args(config: ServerConfig) -> list:
         args = [
             f"--host={config.host}",
@@ -1295,9 +1315,15 @@ async def api_stop_client():
 @app.post("/api/start-all")
 async def api_start_all():
     server_result = ProcessManager.start_server()
-    await asyncio.sleep(3)
+    wait_result = await ProcessManager.wait_server_ready(timeout_seconds=180)
+    if not wait_result.get("ready"):
+        return {
+            "server": server_result,
+            "server_ready": wait_result,
+            "client": {"status": "not_started", "message": "Client was not started because ASR is not ready."},
+        }
     client_result = ProcessManager.start_client()
-    return {"server": server_result, "client": client_result}
+    return {"server": server_result, "server_ready": wait_result, "client": client_result}
 
 
 @app.post("/api/stop-all")

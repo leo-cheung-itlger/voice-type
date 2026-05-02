@@ -61,7 +61,7 @@ if (-not $apiReady) {
     throw "VoiceType API did not become ready at $apiUrl. See logs\api_stderr.log."
 }
 
-$startAll = Invoke-RestMethod -Uri "$apiUrl/api/start-all" -Method Post -TimeoutSec 60
+$startAll = Invoke-RestMethod -Uri "$apiUrl/api/start-all" -Method Post -TimeoutSec 240
 
 $asrReady = $false
 for ($i = 0; $i -lt 300; $i++) {

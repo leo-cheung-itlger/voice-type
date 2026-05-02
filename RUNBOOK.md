@@ -225,7 +225,7 @@ For daily ASR changes:
 
 1. Start the Web control console.
 2. Start ASR server and client from the console.
-3. Press the configured shortcut key, record a short phrase, and release. The default may be `caps_lock`; the current test config uses `right shift`.
+3. Press the configured shortcut key, record a short phrase, and release. The default is `caps_lock`.
 4. Confirm recognition result appears in the target input, the Web console latest result, and history.
 5. Confirm saved audio path is present when recording save is enabled.
 6. Restart server/client and confirm status recovers.
@@ -238,6 +238,13 @@ Special-key shortcut checks:
 3. Repeat with `right_shift`; right Shift should trigger, left Shift should not.
 4. Repeat with aggregate `shift`; both left and right Shift should trigger.
 5. Tap faster than the threshold and confirm the log records an ignored short press with no ASR submission.
+
+ASR startup readiness checks:
+
+1. Run `scripts\stop-dev.ps1`, then `scripts\start-runtime.ps1`.
+2. Confirm `start-runtime.ps1` waits until `/api/status` reports `server.port_open=true` before the client starts.
+3. The client log should not show `[WinError 1225]` after a clean start.
+4. If a recording is made while ASR is warming up, the client should retry the WebSocket connection briefly instead of dropping the request immediately.
 
 Short-press and archive checks:
 

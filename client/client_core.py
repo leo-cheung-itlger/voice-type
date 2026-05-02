@@ -436,13 +436,27 @@ class VoiceClient:
             logger.warning(f"Failed to write transcript result JSON: {e}")
 
     async def _recognize_item(self, item: dict) -> dict:
-        async with websockets.connect(
-            f"ws://{self._config.server_host}:{self._config.server_port}",
-            max_size=None,
-            ping_interval=20,
-            ping_timeout=10,
-            close_timeout=5,
-        ) as ws:
+        ws_url = f"ws://{self._config.server_host}:{self._config.server_port}"
+        deadline = time.monotonic() + 30
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                ws = await websockets.connect(
+                    ws_url,
+                    max_size=None,
+                    ping_interval=20,
+                    ping_timeout=10,
+                    close_timeout=5,
+                )
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise
+                logger.warning("ASR server not ready for request, retrying... (attempt %s, error=%s)", attempt, exc)
+                await asyncio.sleep(min(1.0 + attempt * 0.5, 3.0))
+
+        async with ws:
             await ws.send(json.dumps({
                 "type": "audio_start",
                 "task_id": item["task_id"],
