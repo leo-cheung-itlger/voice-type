@@ -299,9 +299,11 @@ class VoiceClient:
         self._key_down_at = time.monotonic()
         logger.info("Key pressed, starting recording")
 
+        recorder_started_at = time.monotonic()
         if not self._recorder.start():
             self._recording = False
             return
+        logger.info("Recorder start latency: %.3fs", time.monotonic() - recorder_started_at)
 
         self._notifier.recording_started()
 

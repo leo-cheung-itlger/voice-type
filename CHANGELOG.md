@@ -2,6 +2,12 @@
 
 ## 2026-05-02
 
+- Changed Dashboard recent history actions from whole-row copy to explicit SVG buttons for play/stop and copy; recording playback is served through a task-scoped history audio API instead of exposing arbitrary file paths.
+- Simplified microphone Settings: removed the full selected-device hint, removed the all-devices toggle and compact-list note, deduplicated recommended microphones by visible name, and changed microphone changes to prompt for client restart just like shortcut changes.
+- Changed microphone testing to record 3 seconds, return an in-memory WAV payload, and auto-play the test audio while keeping RMS/Peak output visible.
+- Added recorder startup latency logging so delayed capture can be diagnosed from `client_core` logs.
+- Validation: Python compile passed; frontend typecheck/build passed; temporary API smoke confirmed `/api/audio/test-input` returns playable WAV data; Tauri build passed with `CARGO_TARGET_DIR=frontend/src-tauri/target-codex-build6`. The main portable EXE was locked by Windows, so a refreshed test EXE was written to `dist/releases/VoiceType-1.0.0/VoiceType-1.0.0-portable-build6.exe`.
+
 - Added a desktop startup overlay that shows runtime startup stages and keeps a restart-runtime action visible if API/ASR/client startup fails.
 - Added microphone diagnostics: `/api/audio/input-devices` now annotates host API, recommendation state, reason, and level-test support; `/api/audio/test-input` records a short in-memory sample and returns RMS/peak/signal status without saving audio.
 - Tightened microphone handling in the recording client: selected device host API/sample rate are persisted, the recorder opens streams using the selected device's default sample rate, sends the actual sample rate to ASR, logs RMS/peak levels, and reports near-silent input as `未检测到有效麦克风输入`.

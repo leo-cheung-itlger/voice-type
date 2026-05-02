@@ -42,7 +42,7 @@
         <label class="row setting-row">
           <span>
             <span class="value">麦克风</span>
-            <span class="label">{{ microphoneHint }}</span>
+            <span class="label" :class="{ danger: microphoneChanged }">{{ microphoneHint }}</span>
           </span>
           <div class="mic-stack">
             <div class="inline-controls mic-controls">
@@ -61,10 +61,6 @@
               </button>
               <button class="btn btn-small btn-ghost" @click.prevent="store.fetchAudioInputDevices()">刷新</button>
             </div>
-            <label class="inline-check">
-              <input v-model="showAllAudioDevices" type="checkbox" />
-              <span>显示全部设备</span>
-            </label>
             <div v-if="store.audioInputTest" class="mic-test" :class="{ ok: store.audioInputTest.has_signal }">
               {{ audioTestLabel }}
             </div>
@@ -76,13 +72,6 @@
             <span class="label">当前选择的设备已消失，客户端会回退系统默认输入。</span>
           </span>
           <button class="btn btn-small btn-ghost" @click.prevent="resetMicrophone">使用默认</button>
-        </label>
-        <label v-if="store.audioInputDevices?.available && !showAllAudioDevices" class="row setting-row compact-note">
-          <span>
-            <span class="value">设备列表已精简</span>
-            <span class="label">默认只显示推荐麦克风。找不到设备时打开“显示全部设备”。</span>
-          </span>
-          <span class="label">{{ visibleAudioDevices.length }}/{{ store.audioInputDevices.devices.length }}</span>
         </label>
         <label class="row setting-row">
           <span>
@@ -249,7 +238,7 @@
 
     <div v-if="restartPrompt" class="modal-backdrop">
       <div class="modal">
-        <div class="value">快捷键设置已更改</div>
+        <div class="value">{{ restartPromptTitle }}</div>
         <p class="label">是否立即自动重启录音客户端以使其生效？</p>
         <div class="modal-actions">
           <button class="btn btn-primary" @click="confirmRestartNow">立即重启</button>
@@ -269,9 +258,10 @@ const benchmarking = ref(false)
 const captureMode = ref(false)
 const saveState = ref('自动保存')
 const restartPrompt = ref(false)
+const restartPromptTitle = ref('设置已更改')
 const activeClientShortcut = ref('')
+const activeClientDevice = ref('')
 const selectedInputDevice = ref(-1)
-const showAllAudioDevices = ref(false)
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let saveStarted = false
 
@@ -302,15 +292,21 @@ const microphoneHint = computed(() => {
   if (!devices) return '等待检测输入设备'
   if (!devices.available) return devices.error || 'PyAudio 不可用'
   if (!devices.selected_exists) return '所选麦克风已不存在，将回退系统默认'
-  const selected = devices.devices.find((device) => device.index === store.config.client.input_device_index)
-  if (!selected) return '使用系统默认麦克风，客户端重启后生效'
-  return `${selected.host_api || 'Unknown'} · ${selected.channels} 通道 · ${selected.default_sample_rate || store.config.client.sample_rate}Hz，客户端重启后生效`
+  return microphoneChanged.value ? '麦克风已更改，需重启客户端后生效' : '客户端重启后生效'
 })
 
 const visibleAudioDevices = computed(() => {
   const devices = store.audioInputDevices?.devices || []
-  if (showAllAudioDevices.value) return devices
-  return devices.filter((device) => device.recommended || device.selected || device.is_default)
+  const candidates = devices.filter((device) => device.recommended || device.selected || device.is_default)
+  const byName = new Map<string, AudioInputDevice>()
+  for (const device of candidates) {
+    const key = normalizedDeviceName(device.name)
+    const existing = byName.get(key)
+    if (!existing || deviceRank(device) < deviceRank(existing)) {
+      byName.set(key, device)
+    }
+  }
+  return [...byName.values()]
 })
 
 const audioTestLabel = computed(() => {
@@ -322,12 +318,15 @@ const audioTestLabel = computed(() => {
   return `${device}${result.message} · RMS ${(rms * 100).toFixed(2)}% · Peak ${(peak * 100).toFixed(2)}%`
 })
 
+const microphoneChanged = computed(() => deviceSignature() !== activeClientDevice.value)
+
 async function save(promptRestart = false) {
   saveState.value = '保存中'
   await store.saveConfig()
   await Promise.all([store.fetchStatus(), store.fetchModels()])
   saveState.value = store.lastError ? '保存失败' : '已保存'
   if (promptRestart && !store.lastError && activeClientShortcut.value && normalizeShortcut(store.config.client.shortcut_key) !== activeClientShortcut.value) {
+    restartPromptTitle.value = '快捷键设置已更改'
     restartPrompt.value = true
   }
 }
@@ -388,6 +387,10 @@ function onMicrophoneChange() {
   store.config.client.input_device_name = device?.name || ''
   store.config.client.input_device_host_api = device?.host_api || ''
   store.config.client.input_device_sample_rate = Number(device?.default_sample_rate || 0)
+  if (deviceSignature() !== activeClientDevice.value) {
+    restartPromptTitle.value = '麦克风设置已更改'
+    restartPrompt.value = true
+  }
 }
 
 function resetMicrophone() {
@@ -396,16 +399,38 @@ function resetMicrophone() {
   store.config.client.input_device_name = ''
   store.config.client.input_device_host_api = ''
   store.config.client.input_device_sample_rate = 0
+  restartPromptTitle.value = '麦克风设置已更改'
+  restartPrompt.value = true
 }
 
 function deviceLabel(device: AudioInputDevice) {
-  const tags = [
-    device.host_api || 'Unknown',
-    `${device.default_sample_rate || store.config.client.sample_rate}Hz`,
-    device.is_default ? '默认' : '',
-    device.recommended ? '推荐' : '',
-  ].filter(Boolean)
-  return `${device.name} · ${tags.join(' · ')}`
+  return device.is_default ? `${device.name} · 默认` : device.name
+}
+
+function normalizedDeviceName(name: string) {
+  return (name || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s*\([^)]*(capture|output)\)\s*/gi, '')
+    .trim()
+    .toLowerCase()
+}
+
+function deviceRank(device: AudioInputDevice) {
+  const selectedBonus = device.selected ? -200000 : 0
+  const defaultBonus = device.is_default ? -100000 : 0
+  const sample = Number(device.default_sample_rate || 999999)
+  const host = (device.host_api || '').toLowerCase()
+  const hostPenalty = host.includes('wasapi') || host.includes('directsound') ? 0 : 10000
+  return selectedBonus + defaultBonus + hostPenalty + sample
+}
+
+function deviceSignature() {
+  return [
+    Number(store.config.client.input_device_index ?? -1),
+    store.config.client.input_device_name || '',
+    store.config.client.input_device_host_api || '',
+    Number(store.config.client.input_device_sample_rate || 0),
+  ].join('|')
 }
 
 async function testMicrophone() {
@@ -419,12 +444,15 @@ async function restartClient() {
   await save(false)
   await store.restartClient()
   activeClientShortcut.value = normalizeShortcut(store.config.client.shortcut_key)
+  activeClientDevice.value = deviceSignature()
   restartPrompt.value = false
 }
 
 async function confirmRestartNow() {
+  await save(false)
   await store.restartClient()
   activeClientShortcut.value = normalizeShortcut(store.config.client.shortcut_key)
+  activeClientDevice.value = deviceSignature()
   restartPrompt.value = false
 }
 
@@ -503,6 +531,7 @@ onMounted(async () => {
   await store.fetchConfig()
   selectedInputDevice.value = Number(store.config.client.input_device_index ?? -1)
   activeClientShortcut.value = normalizeShortcut(store.config.client.shortcut_key)
+  activeClientDevice.value = deviceSignature()
   store.fetchModels()
   store.fetchHardware()
   store.fetchAudioInputDevices()
@@ -620,6 +649,10 @@ input[type="checkbox"] {
   width: 18px;
   height: 18px;
   accent-color: var(--accent);
+}
+
+.danger {
+  color: var(--danger);
 }
 
 .model-list {

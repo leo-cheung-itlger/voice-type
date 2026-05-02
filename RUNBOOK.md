@@ -259,7 +259,7 @@ Microphone selection checks:
 1. `GET /api/audio/input-devices` should return `available=true`, a `devices` list, and `recommended_count`.
 2. Settings should show a short recommended list by default. `3.5mm麦克风` and `麦克风阵列` should be visible if Windows exposes them through DirectSound/WASAPI. Use `显示全部设备` only for troubleshooting duplicates.
 3. Selecting a device persists `client.input_device_index`, `client.input_device_name`, `client.input_device_host_api`, and `client.input_device_sample_rate`.
-4. Click `测试`, speak for about 2 seconds, and confirm the result says `有声音` with non-trivial RMS/Peak values. If it says `太安静`, try the same physical microphone's WASAPI `48000Hz` entry before changing models.
+4. Click `测试`, speak for about 3 seconds, and confirm the result says `有声音` with non-trivial RMS/Peak values. The test should auto-play the captured sample so you can verify the selected microphone is actually the intended source.
 5. Restart the client and confirm `logs\recorder_*.log` reports the chosen device index/name and actual sample rate.
 6. If the selected device is missing, recording should fall back to the system default and Settings should show a warning.
 7. If a real-time recording has near-zero RMS/Peak, the client should show `未检测到有效麦克风输入` and skip ASR submission.
@@ -267,10 +267,10 @@ Microphone selection checks:
 Mic test API:
 
 ```bat
-curl -X POST http://127.0.0.1:55342/api/audio/test-input -H "Content-Type: application/json" -d "{\"device_index\":20,\"seconds\":2}"
+curl -X POST http://127.0.0.1:55342/api/audio/test-input -H "Content-Type: application/json" -d "{\"device_index\":20,\"seconds\":3}"
 ```
 
-The API records only an in-memory sample and returns RMS/Peak; it does not save a recording file.
+The API records only an in-memory sample, returns RMS/Peak plus a base64 WAV preview for UI playback, and does not save a recording file.
 
 History and layout checks:
 

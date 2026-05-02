@@ -190,6 +190,7 @@ export interface AudioInputTestResult {
   peak?: number
   rms_ratio?: number
   peak_ratio?: number
+  audio_wav_base64?: string
 }
 
 export interface TranscriptionTask {
@@ -315,11 +316,13 @@ export const useAppStore = defineStore('app', () => {
   const audioInputDevices = ref<AudioInputDevicesResponse | null>(null)
   const audioInputTest = ref<AudioInputTestResult | null>(null)
   const audioInputTesting = ref(false)
+  const playingTaskId = ref('')
   const runtimeDiagnostics = ref('')
   const runtimeRestarting = ref(false)
   const lastError = ref('')
   const toastMessage = ref('')
   let toastTimer: ReturnType<typeof setTimeout> | null = null
+  let activeAudio: HTMLAudioElement | null = null
   const ws: { current: WebSocket | null } = { current: null }
 
   const latestEntry = computed(() => history.value[history.value.length - 1] || null)
@@ -499,11 +502,14 @@ export const useAppStore = defineStore('app', () => {
     const data = await apiFetch<AudioInputTestResult>('/audio/test-input', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ device_index: Number(deviceIndex ?? -1), seconds: 2 }),
+      body: JSON.stringify({ device_index: Number(deviceIndex ?? -1), seconds: 3 }),
     })
     if (data) {
       audioInputTest.value = data
       showToast(data.message || (data.has_signal ? '有声音' : '太安静'))
+      if (data.audio_wav_base64) {
+        playAudioSource(`data:audio/wav;base64,${data.audio_wav_base64}`, 'mic-test')
+      }
     }
     audioInputTesting.value = false
     return data
@@ -833,12 +839,54 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  function stopAudio() {
+    if (activeAudio) {
+      activeAudio.pause()
+      activeAudio.currentTime = 0
+      activeAudio = null
+    }
+    playingTaskId.value = ''
+  }
+
+  function playAudioSource(source: string, id: string) {
+    if (playingTaskId.value === id) {
+      stopAudio()
+      return
+    }
+    stopAudio()
+    activeAudio = new Audio(source)
+    playingTaskId.value = id
+    activeAudio.onended = () => {
+      if (playingTaskId.value === id) playingTaskId.value = ''
+      activeAudio = null
+    }
+    activeAudio.onerror = () => {
+      showToast('播放失败')
+      if (playingTaskId.value === id) playingTaskId.value = ''
+      activeAudio = null
+    }
+    activeAudio.play().catch((error) => {
+      lastError.value = error instanceof Error ? error.message : String(error)
+      showToast('播放失败')
+      if (playingTaskId.value === id) playingTaskId.value = ''
+      activeAudio = null
+    })
+  }
+
+  function playHistoryAudio(entry: HistoryEntry) {
+    if (!entry.audio_path) {
+      showToast('没有录音文件')
+      return
+    }
+    playAudioSource(`${API_BASE}/history/${encodeURIComponent(entry.task_id)}/audio`, entry.task_id)
+  }
+
   return {
     serverRunning, clientRunning, serverPid, clientPid, serverManaged, clientManaged,
     serverPortOpen, serverConflict, clientConflict, serverProcessCount, clientProcessCount,
     history, errorMarks, wsConnected, currentPartial, topWords,
     config, models, logs, recentIssues, hotwordContent, selectedHotword, toastMessage,
-    ffmpeg, llmConfig, transcriptions, audioInputDevices, audioInputTest, audioInputTesting, runtimeDiagnostics, runtimeRestarting, hardware, benchmarks, benchmarkingModels, lastError,
+    ffmpeg, llmConfig, transcriptions, audioInputDevices, audioInputTest, audioInputTesting, playingTaskId, runtimeDiagnostics, runtimeRestarting, hardware, benchmarks, benchmarkingModels, lastError,
     apiBase: API_BASE,
     latestEntry, totalEntries, avgDelay, serviceLabel, selectedModel, accelerationState, accelerationRecommendation,
     fetchStatus, fetchHealth, fetchConfig, fetchAudioInputDevices, testAudioInput, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, applyAccelerationRecommendation,
@@ -848,6 +896,6 @@ export const useAppStore = defineStore('app', () => {
     fetchStats, fetchLogs, fetchHotword, saveHotword,
     fetchFfmpegStatus, fetchLlmConfig, saveLlmConfig,
     fetchTranscriptions, createTranscription, uploadTranscription, cancelTranscription,
-    connectRecognition, disconnectRecognition, copyToClipboard, showToast,
+    connectRecognition, disconnectRecognition, copyToClipboard, showToast, playHistoryAudio, stopAudio,
   }
 })

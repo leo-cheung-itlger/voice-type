@@ -1,11 +1,14 @@
 import asyncio
+import base64
 import glob
+import io
 import json
 import os
 import socket
 import subprocess
 import sys
 import time
+import wave
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -14,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import uvicorn
 import websockets as ws_lib
@@ -123,7 +127,7 @@ class LLMConfigRequest(BaseModel):
 
 class AudioTestRequest(BaseModel):
     device_index: int = -1
-    seconds: float = 2.0
+    seconds: float = 3.0
 
 
 class ProcessManager:
@@ -938,7 +942,7 @@ def _record_audio_test(device_index: int, seconds: float) -> dict:
 
     audio = pyaudio.PyAudio()
     stream = None
-    seconds = max(0.5, min(float(seconds or 2.0), 5.0))
+    seconds = max(0.5, min(float(seconds or 3.0), 5.0))
     try:
         info = (
             audio.get_device_info_by_index(device_index)
@@ -966,6 +970,12 @@ def _record_audio_test(device_index: int, seconds: float) -> dict:
             chunks.append(stream.read(chunk, exception_on_overflow=False))
         data = b"".join(chunks)
         level = measure_pcm16_level(data)
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(data)
         message = "有声音" if level["has_signal"] else "太安静或未检测到有效输入"
         return {
             "ok": True,
@@ -976,6 +986,7 @@ def _record_audio_test(device_index: int, seconds: float) -> dict:
             "host_api": host_api,
             "sample_rate": sample_rate,
             "seconds": seconds,
+            "audio_wav_base64": base64.b64encode(wav_buffer.getvalue()).decode("ascii"),
             **level,
         }
     except Exception as exc:
@@ -1474,6 +1485,27 @@ async def api_stop_all():
 async def get_history(limit: int = 100, offset: int = 0):
     entries = history.get_entries(limit=limit, offset=offset)
     return {"entries": entries, "total": len(entries)}
+
+
+@app.get("/api/history/{task_id}/audio")
+async def get_history_audio(task_id: str):
+    entries = history.get_entries(limit=1000)
+    entry = next((item for item in entries if item.get("task_id") == task_id), None)
+    if not entry:
+        raise HTTPException(status_code=404, detail="History entry not found")
+    audio_path = Path(entry.get("audio_path") or "")
+    if not audio_path.exists() or not audio_path.is_file():
+        raise HTTPException(status_code=404, detail="Recording file not found")
+
+    allowed_roots = [
+        Path(load_app_config().client.archive_root).resolve(),
+        Path(load_app_config().client.audio_dir).resolve(),
+        Path(BASE_DIR, "data").resolve(),
+    ]
+    resolved = audio_path.resolve()
+    if not any(resolved == root or root in resolved.parents for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="Recording path is outside VoiceType data directories")
+    return FileResponse(str(resolved), media_type="audio/wav", filename=resolved.name)
 
 
 @app.post("/api/history/clear")

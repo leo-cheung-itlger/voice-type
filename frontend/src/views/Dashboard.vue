@@ -82,10 +82,32 @@
         <button v-if="store.latestEntry" class="btn btn-small btn-ghost" @click="store.copyToClipboard(store.latestEntry.text)">复制最新</button>
       </div>
       <div class="panel recent-list">
-        <button v-for="entry in recentEntries" :key="entry.task_id" class="recent-item" @click="store.copyToClipboard(entry.text)">
+        <div v-for="entry in recentEntries" :key="entry.task_id" class="recent-item">
           <p>{{ entry.text }}</p>
-          <span>{{ formatDuration(entry) }}</span>
-        </button>
+          <div class="recent-actions">
+            <span>{{ formatDuration(entry) }}</span>
+            <button
+              class="icon-btn"
+              :class="{ active: store.playingTaskId === entry.task_id }"
+              :disabled="!entry.audio_path"
+              :title="store.playingTaskId === entry.task_id ? '停止播放' : '播放录音'"
+              @click="store.playHistoryAudio(entry)"
+            >
+              <svg v-if="store.playingTaskId !== entry.task_id" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+              <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 7h10v10H7z" />
+              </svg>
+            </button>
+            <button class="icon-btn" title="复制文本" @click="store.copyToClipboard(entry.text)">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 8h10v12H8z" fill="none" stroke="currentColor" stroke-width="2" />
+                <path d="M6 16H4V4h12v2" fill="none" stroke="currentColor" stroke-width="2" />
+              </svg>
+            </button>
+          </div>
+        </div>
         <div v-if="recentEntries.length === 0" class="empty">暂无识别记录</div>
       </div>
     </section>
@@ -242,7 +264,6 @@ function formatDuration(entry: HistoryEntry) {
   border-bottom: 1px solid var(--line);
   color: var(--text);
   background: transparent;
-  cursor: pointer;
   text-align: left;
 }
 
@@ -258,10 +279,45 @@ function formatDuration(entry: HistoryEntry) {
   word-break: break-word;
 }
 
-.recent-item span,
+.recent-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.recent-actions span,
 .issue-line {
   color: var(--muted);
   font-size: 12px;
+}
+
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--panel-2);
+  cursor: pointer;
+}
+
+.icon-btn:hover,
+.icon-btn.active {
+  color: var(--accent);
+  border-color: rgba(125, 220, 155, 0.38);
+}
+
+.icon-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
 }
 
 .issue-list {
