@@ -4,7 +4,7 @@
 
 - Status: Phase 1/2 implementation in progress; Web control console is now a compact desktop-window-style app with persisted config, operational APIs, a working first file-transcription workspace, VoiceType-specific ports, a verified CUDA route for the installed Qwen model, a compiled Tauri 1.0.0 desktop shell, event-based special-key hotkey listening, runtime diagnostics, and microphone selection.
 - Active goal: stabilize VoiceType daily voice input, then expand the same frontend into Tauri with file transcription and subtitle export.
-- Current blocker: manual Caps Lock dictation still needs user-side confirmation after selecting a working microphone and restarting the client. The app can test an input device for RMS/peak level, auto-play the test audio, and report near-silent recordings as microphone-input failures instead of generic empty ASR results.
+- Current blocker: manual Caps Lock dictation still needs user-side confirmation after selecting a working microphone and restarting the client. The app now includes an advanced microphone monitor that can scan all Windows input devices and show RMS/Peak plus waveform bars; API self-test proved several local inputs have live signal, so remaining failures are likely selection/restart/runtime-state related rather than total microphone unavailability.
 - Governance note: every substantial task now requires an explicit validation gate and browser/runtime checks for UI work.
 
 ## Current Architecture
@@ -18,7 +18,7 @@
 - Runtime ports: ASR `55341`, API `55342`, frontend `55343`
 - Desktop shell: `frontend/src-tauri/` uses Tauri v2, with a 480x720 window, single-instance handling, tray Show/Quit menu, close-to-tray behavior, and runtime startup through `scripts/start-runtime.ps1`
 - Daily recording archive: valid hotkey recordings now use `data/archive/YYYY/MM/DD/HHMMSS_<task_id>/recording.wav` plus `result.json`; short presses below `client.min_press_seconds` are ignored before ASR submission.
-- Microphone selection: Settings reads `/api/audio/input-devices`, defaults to a deduplicated recommended physical-input list, persists `client.input_device_index`, `client.input_device_name`, `client.input_device_host_api`, and `client.input_device_sample_rate`, and prompts to restart the recording client after microphone changes.
+- Microphone selection: Settings reads `/api/audio/input-devices`, defaults to a deduplicated recommended physical-input list, persists `client.input_device_index`, `client.input_device_name`, `client.input_device_host_api`, and `client.input_device_sample_rate`, prompts to restart the recording client after microphone changes, and can open a separate `麦克风高级检测` window.
 - Agent integration guide: `.agents/skills/voicetype-transcription/SKILL.md`
 - Historical handoff: `PROJECT_SUMMARY.md`
 
@@ -40,14 +40,15 @@
 - Qwen route note: `Qwen3-ASR-1.7B` is installed and remains the high-quality GPU model. Latest fixed mp3 benchmark measured `qwen3-asr-1.7b::pytorch-cuda` at about 31.79s cold load plus 4.61s inference, versus `qwen3-asr-1.7b::pytorch-cpu` at about 15.56s load plus 17.76s inference. `Qwen3-ASR-0.6B` and `Qwen3-ASR-1.7B-GGUF` are listed as low-latency/GPU candidates but are not installed locally yet.
 - Benchmark harness: `scripts/model_benchmark.py` and `/api/models/benchmark-all` write per-model/mode records to ignored runtime data at `data/model_benchmark.json`, including missing-model records without fake inference timings. Paraformer CPU now initializes correctly through `OfflineRecognizer.from_paraformer` and measured about 0.16s inference, but sherpa-onnx CUDA is unavailable in the current Python environment and is blocked under `gpu_required=true`.
 - Microphone diagnostics smoke: the updated `/api/audio/input-devices` on a temporary API port returned 20 total inputs and 5 recommended visible inputs, including `3.5mm麦克风` and `麦克风阵列` DirectSound/WASAPI options. `/api/audio/test-input` opened the default input, measured PCM level, returned a playable WAV payload, and correctly reported no effective signal while no one was speaking.
+- Advanced microphone scan smoke: `/api/audio/scan-levels` on temporary API port `55442` scanned 20 inputs in about 1.55s, detected 5 active sources, returned waveform arrays, and showed 3.5mm/array DirectSound inputs with live RMS around 5.7% during the test window.
 - Dashboard audio playback smoke: frontend build passed with recent-record play/stop and copy SVG actions. The audio file endpoint is restricted to history task recordings under VoiceType data/archive directories.
-- Desktop shell smoke: MSVC Build Tools are installed and available through `VsDevCmd.bat`; Tauri 1.0.0 build passed on 2026-05-02 using `CARGO_TARGET_DIR=frontend/src-tauri/target-codex-build6`. The main portable EXE was locked during copy, so the latest compiled EXE was copied to `dist/releases/VoiceType-1.0.0/VoiceType-1.0.0-portable-build6.exe`.
+- Desktop shell smoke: MSVC Build Tools are installed and available through `VsDevCmd.bat`; Tauri 1.0.0 build passed on 2026-05-02 using `CARGO_TARGET_DIR=frontend/src-tauri/target-codex-build7`. The latest compiled EXE was copied to `dist/releases/VoiceType-1.0.0/VoiceType-1.0.0-portable-build7.exe`.
 
 ## Next Minimal Action
 
 - Use `dist/releases/VoiceType-1.0.0/VoiceType-1.0.0-portable.exe` as the only manual desktop entry for current testing; do not open `target/**/deps/*.exe` or old `target-codex-build*` outputs.
-- For this build, launch `dist/releases/VoiceType-1.0.0/VoiceType-1.0.0-portable-build6.exe` unless the main portable EXE has been closed and refreshed.
-- In Settings, pick the intended microphone, click `测试`, speak for 3 seconds, confirm it plays back the captured audio and shows `有声音`, then accept the client restart prompt before trying Caps Lock dictation.
+- For this build, launch `dist/releases/VoiceType-1.0.0/VoiceType-1.0.0-portable-build7.exe`.
+- In Settings, open `高级检测`, speak normally, identify the row whose waveform and RMS/Peak move, click `使用` on that exact device, then restart the client before trying Caps Lock dictation.
 
 ## Last Updated
 

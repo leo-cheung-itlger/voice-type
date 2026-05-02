@@ -193,6 +193,30 @@ export interface AudioInputTestResult {
   audio_wav_base64?: string
 }
 
+export interface AudioLevelDevice extends AudioInputDevice {
+  ok: boolean
+  message: string
+  has_signal: boolean
+  bytes?: number
+  samples?: number
+  rms?: number
+  peak?: number
+  rms_ratio: number
+  peak_ratio: number
+  waveform: number[]
+}
+
+export interface AudioLevelScanResponse {
+  available: boolean
+  devices: AudioLevelDevice[]
+  seconds?: number
+  waveform_points?: number
+  elapsed_seconds?: number
+  detected_count?: number
+  strongest?: AudioLevelDevice | null
+  error: string
+}
+
 export interface TranscriptionTask {
   task_id: string
   status: 'queued' | 'transcribing' | 'polishing' | 'completed' | 'failed' | 'cancelled'
@@ -316,6 +340,8 @@ export const useAppStore = defineStore('app', () => {
   const audioInputDevices = ref<AudioInputDevicesResponse | null>(null)
   const audioInputTest = ref<AudioInputTestResult | null>(null)
   const audioInputTesting = ref(false)
+  const audioLevelScan = ref<AudioLevelScanResponse | null>(null)
+  const audioLevelScanning = ref(false)
   const playingTaskId = ref('')
   const runtimeDiagnostics = ref('')
   const runtimeRestarting = ref(false)
@@ -512,6 +538,18 @@ export const useAppStore = defineStore('app', () => {
       }
     }
     audioInputTesting.value = false
+    return data
+  }
+
+  async function scanAudioLevels(includeAll = true) {
+    audioLevelScanning.value = true
+    const data = await apiFetch<AudioLevelScanResponse>('/audio/scan-levels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seconds: 0.2, include_all: includeAll, waveform_points: 64 }),
+    })
+    if (data) audioLevelScan.value = data
+    audioLevelScanning.value = false
     return data
   }
 
@@ -886,10 +924,10 @@ export const useAppStore = defineStore('app', () => {
     serverPortOpen, serverConflict, clientConflict, serverProcessCount, clientProcessCount,
     history, errorMarks, wsConnected, currentPartial, topWords,
     config, models, logs, recentIssues, hotwordContent, selectedHotword, toastMessage,
-    ffmpeg, llmConfig, transcriptions, audioInputDevices, audioInputTest, audioInputTesting, playingTaskId, runtimeDiagnostics, runtimeRestarting, hardware, benchmarks, benchmarkingModels, lastError,
+    ffmpeg, llmConfig, transcriptions, audioInputDevices, audioInputTest, audioInputTesting, audioLevelScan, audioLevelScanning, playingTaskId, runtimeDiagnostics, runtimeRestarting, hardware, benchmarks, benchmarkingModels, lastError,
     apiBase: API_BASE,
     latestEntry, totalEntries, avgDelay, serviceLabel, selectedModel, accelerationState, accelerationRecommendation,
-    fetchStatus, fetchHealth, fetchConfig, fetchAudioInputDevices, testAudioInput, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, applyAccelerationRecommendation,
+    fetchStatus, fetchHealth, fetchConfig, fetchAudioInputDevices, testAudioInput, scanAudioLevels, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, applyAccelerationRecommendation,
     startServer, stopServer, startClient, stopClient, restartClient, startAll, stopAll,
     fetchRuntimeDiagnostics, restartRuntime,
     fetchHistory, clearHistory, deleteHistoryEntry, addErrorMark, fetchErrorMarks,

@@ -22,7 +22,7 @@ from pydantic import BaseModel
 import uvicorn
 import websockets as ws_lib
 
-from common.audio_levels import measure_pcm16_level
+from common.audio_levels import measure_pcm16_level, pcm16_waveform
 from common.history import HistoryManager
 from common.hotword import HotwordManager
 from common.logger import setup_logger
@@ -128,6 +128,12 @@ class LLMConfigRequest(BaseModel):
 class AudioTestRequest(BaseModel):
     device_index: int = -1
     seconds: float = 3.0
+
+
+class AudioScanRequest(BaseModel):
+    seconds: float = 0.25
+    include_all: bool = True
+    waveform_points: int = 64
 
 
 class ProcessManager:
@@ -1009,6 +1015,97 @@ def _record_audio_test(device_index: int, seconds: float) -> dict:
 @app.post("/api/audio/test-input")
 async def test_audio_input(req: AudioTestRequest):
     return await asyncio.to_thread(_record_audio_test, req.device_index, req.seconds)
+
+
+def _capture_device_level(audio: Any, pyaudio_module: Any, device: dict, seconds: float, waveform_points: int) -> dict:
+    stream = None
+    try:
+        sample_rate = int(device.get("default_sample_rate") or 48000)
+        chunk = max(240, min(2048, int(sample_rate * 0.02)))
+        stream = audio.open(
+            format=pyaudio_module.paInt16,
+            channels=1,
+            rate=sample_rate,
+            input=True,
+            input_device_index=int(device["index"]),
+            frames_per_buffer=chunk,
+        )
+        chunks = []
+        total_chunks = max(1, int(sample_rate / chunk * seconds))
+        for _ in range(total_chunks):
+            chunks.append(stream.read(chunk, exception_on_overflow=False))
+        data = b"".join(chunks)
+        level = measure_pcm16_level(data)
+        return {
+            **device,
+            **level,
+            "ok": True,
+            "message": "有声音" if level["has_signal"] else "太安静",
+            "waveform": pcm16_waveform(data, waveform_points),
+        }
+    except Exception as exc:
+        return {
+            **device,
+            "ok": False,
+            "message": f"打开失败：{exc}",
+            "has_signal": False,
+            "rms": 0.0,
+            "peak": 0,
+            "rms_ratio": 0.0,
+            "peak_ratio": 0.0,
+            "waveform": [0.0] * waveform_points,
+        }
+    finally:
+        if stream is not None:
+            try:
+                stream.stop_stream()
+                stream.close()
+            except Exception:
+                pass
+
+
+def _scan_audio_levels(seconds: float, include_all: bool, waveform_points: int) -> dict:
+    try:
+        import pyaudio
+    except Exception as exc:
+        return {
+            "available": False,
+            "devices": [],
+            "error": f"PyAudio unavailable: {exc}",
+        }
+
+    inventory = _collect_audio_input_devices()
+    devices = inventory.get("devices", [])
+    if not include_all:
+        devices = [device for device in devices if device.get("recommended") or device.get("selected") or device.get("is_default")]
+
+    seconds = max(0.08, min(float(seconds or 0.25), 0.8))
+    waveform_points = max(16, min(int(waveform_points or 64), 128))
+    audio = pyaudio.PyAudio()
+    started = time.time()
+    try:
+        rows = [
+            _capture_device_level(audio, pyaudio, device, seconds, waveform_points)
+            for device in devices
+        ]
+    finally:
+        audio.terminate()
+
+    return {
+        "available": True,
+        "devices": rows,
+        "seconds": seconds,
+        "waveform_points": waveform_points,
+        "elapsed_seconds": round(time.time() - started, 3),
+        "detected_count": len([device for device in rows if device.get("has_signal")]),
+        "strongest": max(rows, key=lambda item: item.get("rms_ratio", 0.0), default=None),
+        "error": "",
+    }
+
+
+@app.post("/api/audio/scan-levels")
+async def scan_audio_levels(req: AudioScanRequest):
+    return await asyncio.to_thread(_scan_audio_levels, req.seconds, req.include_all, req.waveform_points)
 
 
 @app.get("/api/models")

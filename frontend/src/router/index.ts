@@ -9,6 +9,7 @@ const router = createRouter({
     { path: '/hotwords', name: 'hotwords', component: () => import('../views/Hotwords.vue') },
     { path: '/stats', name: 'stats', component: () => import('../views/Stats.vue') },
     { path: '/settings', name: 'settings', component: () => import('../views/Settings.vue') },
+    { path: '/microphones', name: 'microphones', component: () => import('../views/MicrophoneMonitor.vue') },
   ],
 })
 

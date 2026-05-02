@@ -8,7 +8,7 @@ use tauri::{
     Emitter,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
 #[cfg(windows)]
@@ -131,6 +131,27 @@ fn restart_runtime() -> Result<String, String> {
     start_runtime()
 }
 
+#[tauri::command]
+fn open_microphone_monitor(app: tauri::AppHandle) -> Result<String, String> {
+    if let Some(window) = app.get_webview_window("microphone-monitor") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok("focused".to_string());
+    }
+    WebviewWindowBuilder::new(
+        &app,
+        "microphone-monitor",
+        WebviewUrl::App("index.html#/microphones".into()),
+    )
+    .title("VoiceType 麦克风高级检测")
+    .inner_size(760.0, 720.0)
+    .min_inner_size(560.0, 480.0)
+    .build()
+    .map(|_| "opened".to_string())
+    .map_err(|err| format!("打开麦克风高级检测失败: {err}"))
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -146,7 +167,7 @@ fn main() {
             let _ = app.emit("single-instance", SingleInstancePayload { args: argv, cwd });
             let _ = app.emit("runtime-toast", "VoiceType 已在运行，已切换到当前窗口。");
         }))
-        .invoke_handler(tauri::generate_handler![runtime_diagnostics, restart_runtime])
+        .invoke_handler(tauri::generate_handler![runtime_diagnostics, restart_runtime, open_microphone_monitor])
         .setup(|app| {
             if let Err(message) = start_runtime() {
                 let _ = app.emit("runtime-toast", message);

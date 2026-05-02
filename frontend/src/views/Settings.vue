@@ -59,6 +59,7 @@
               <button class="btn btn-small btn-ghost" :disabled="store.audioInputTesting" @click.prevent="testMicrophone">
                 {{ store.audioInputTesting ? '测试中' : '测试' }}
               </button>
+              <button class="btn btn-small btn-ghost" @click.prevent="openMicrophoneMonitor">高级检测</button>
               <button class="btn btn-small btn-ghost" @click.prevent="store.fetchAudioInputDevices()">刷新</button>
             </div>
             <div v-if="store.audioInputTest" class="mic-test" :class="{ ok: store.audioInputTest.has_signal }">
@@ -251,9 +252,11 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { type AudioInputDevice, type ModelEntry, useAppStore } from '../stores/app'
 
 const store = useAppStore()
+const router = useRouter()
 const benchmarking = ref(false)
 const captureMode = ref(false)
 const saveState = ref('自动保存')
@@ -438,6 +441,20 @@ async function testMicrophone() {
   if (result && !result.has_signal) {
     store.showToast('未检测到有效声音，建议切换同名 WASAPI/48000Hz 设备')
   }
+}
+
+async function openMicrophoneMonitor() {
+  const tauriWindow = window as any
+  if (tauriWindow.__TAURI_INTERNALS__) {
+    try {
+      const mod = await import('@tauri-apps/api/core')
+      await mod.invoke('open_microphone_monitor')
+      return
+    } catch (error) {
+      store.showToast('改在当前窗口打开高级检测')
+    }
+  }
+  await router.push('/microphones')
 }
 
 async function restartClient() {

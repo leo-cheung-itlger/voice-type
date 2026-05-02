@@ -272,6 +272,14 @@ curl -X POST http://127.0.0.1:55342/api/audio/test-input -H "Content-Type: appli
 
 The API records only an in-memory sample, returns RMS/Peak plus a base64 WAV preview for UI playback, and does not save a recording file.
 
+Advanced microphone monitor:
+
+```bat
+curl -X POST http://127.0.0.1:55342/api/audio/scan-levels -H "Content-Type: application/json" -d "{\"seconds\":0.2,\"include_all\":true,\"waveform_points\":64}"
+```
+
+Settings has a `高级检测` button. In the desktop shell it opens a separate microphone monitor window; in browser/dev mode it falls back to the `/microphones` route. The monitor samples every input device, shows RMS/Peak and a compact waveform, and can save the chosen device to config. After choosing a device, restart the recording client before testing Caps Lock dictation.
+
 History and layout checks:
 
 1. Dashboard should show the latest 10 records when available.

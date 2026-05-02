@@ -2,6 +2,10 @@
 
 ## 2026-05-02
 
+- Added microphone advanced diagnostics: `/api/audio/scan-levels` samples every input device, returns RMS/Peak plus a compact waveform, and reports the strongest active source.
+- Added a `麦克风高级检测` frontend page and Tauri command to open it as a separate desktop child window from Settings. The page can scan once or continuously monitor all detected inputs with waveform bars.
+- Validation: Python compile passed; frontend typecheck/build passed; API smoke on port `55442` scanned 20 input devices, detected 5 active sources, and returned waveform arrays. Tauri build passed with `CARGO_TARGET_DIR=frontend/src-tauri/target-codex-build7`; the latest test EXE is `dist/releases/VoiceType-1.0.0/VoiceType-1.0.0-portable-build7.exe`.
+
 - Changed Dashboard recent history actions from whole-row copy to explicit SVG buttons for play/stop and copy; recording playback is served through a task-scoped history audio API instead of exposing arbitrary file paths.
 - Simplified microphone Settings: removed the full selected-device hint, removed the all-devices toggle and compact-list note, deduplicated recommended microphones by visible name, and changed microphone changes to prompt for client restart just like shortcut changes.
 - Changed microphone testing to record 3 seconds, return an in-memory WAV payload, and auto-play the test audio while keeping RMS/Peak output visible.

@@ -47,3 +47,30 @@ def measure_pcm16_level(audio_data: bytes) -> dict[str, Any]:
         "peak_ratio": round(peak_ratio, 6),
         "has_signal": bool(rms_ratio >= 0.003 or peak_ratio >= 0.02),
     }
+
+
+def pcm16_waveform(audio_data: bytes, points: int = 64) -> list[float]:
+    if not audio_data or points <= 0:
+        return []
+
+    sample_bytes = audio_data[: len(audio_data) - (len(audio_data) % 2)]
+    samples = array("h")
+    samples.frombytes(sample_bytes)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if not samples:
+        return []
+
+    bucket_size = max(1, len(samples) // points)
+    waveform: list[float] = []
+    for start in range(0, len(samples), bucket_size):
+        bucket = samples[start:start + bucket_size]
+        if not bucket:
+            continue
+        peak = max(abs(value) for value in bucket) / 32768.0
+        waveform.append(round(min(1.0, peak), 4))
+        if len(waveform) >= points:
+            break
+    while len(waveform) < points:
+        waveform.append(0.0)
+    return waveform
