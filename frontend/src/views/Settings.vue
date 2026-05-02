@@ -44,19 +44,45 @@
             <span class="value">麦克风</span>
             <span class="label">{{ microphoneHint }}</span>
           </span>
-          <div class="inline-controls mic-controls">
-            <select v-model.number="selectedInputDevice" class="field mic-field" @change="onMicrophoneChange">
-              <option :value="-1">系统默认麦克风</option>
-              <option
-                v-for="device in store.audioInputDevices?.devices || []"
-                :key="device.index"
-                :value="device.index"
-              >
-                {{ device.name }}{{ device.is_default ? ' · 默认' : '' }}
-              </option>
-            </select>
-            <button class="btn btn-small btn-ghost" @click="store.fetchAudioInputDevices()">刷新</button>
+          <div class="mic-stack">
+            <div class="inline-controls mic-controls">
+              <select v-model.number="selectedInputDevice" class="field mic-field" @change="onMicrophoneChange">
+                <option :value="-1">系统默认麦克风</option>
+                <option
+                  v-for="device in visibleAudioDevices"
+                  :key="device.index"
+                  :value="device.index"
+                >
+                  {{ deviceLabel(device) }}
+                </option>
+              </select>
+              <button class="btn btn-small btn-ghost" :disabled="store.audioInputTesting" @click.prevent="testMicrophone">
+                {{ store.audioInputTesting ? '测试中' : '测试' }}
+              </button>
+              <button class="btn btn-small btn-ghost" @click.prevent="store.fetchAudioInputDevices()">刷新</button>
+            </div>
+            <label class="inline-check">
+              <input v-model="showAllAudioDevices" type="checkbox" />
+              <span>显示全部设备</span>
+            </label>
+            <div v-if="store.audioInputTest" class="mic-test" :class="{ ok: store.audioInputTest.has_signal }">
+              {{ audioTestLabel }}
+            </div>
           </div>
+        </label>
+        <label v-if="!store.audioInputDevices?.selected_exists" class="row setting-row warning-row">
+          <span>
+            <span class="value">麦克风不可用</span>
+            <span class="label">当前选择的设备已消失，客户端会回退系统默认输入。</span>
+          </span>
+          <button class="btn btn-small btn-ghost" @click.prevent="resetMicrophone">使用默认</button>
+        </label>
+        <label v-if="store.audioInputDevices?.available && !showAllAudioDevices" class="row setting-row compact-note">
+          <span>
+            <span class="value">设备列表已精简</span>
+            <span class="label">默认只显示推荐麦克风。找不到设备时打开“显示全部设备”。</span>
+          </span>
+          <span class="label">{{ visibleAudioDevices.length }}/{{ store.audioInputDevices.devices.length }}</span>
         </label>
         <label class="row setting-row">
           <span>
@@ -236,7 +262,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { type ModelEntry, useAppStore } from '../stores/app'
+import { type AudioInputDevice, type ModelEntry, useAppStore } from '../stores/app'
 
 const store = useAppStore()
 const benchmarking = ref(false)
@@ -245,6 +271,7 @@ const saveState = ref('自动保存')
 const restartPrompt = ref(false)
 const activeClientShortcut = ref('')
 const selectedInputDevice = ref(-1)
+const showAllAudioDevices = ref(false)
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let saveStarted = false
 
@@ -277,7 +304,22 @@ const microphoneHint = computed(() => {
   if (!devices.selected_exists) return '所选麦克风已不存在，将回退系统默认'
   const selected = devices.devices.find((device) => device.index === store.config.client.input_device_index)
   if (!selected) return '使用系统默认麦克风，客户端重启后生效'
-  return `${selected.channels} 通道 · ${selected.default_sample_rate || store.config.client.sample_rate}Hz，客户端重启后生效`
+  return `${selected.host_api || 'Unknown'} · ${selected.channels} 通道 · ${selected.default_sample_rate || store.config.client.sample_rate}Hz，客户端重启后生效`
+})
+
+const visibleAudioDevices = computed(() => {
+  const devices = store.audioInputDevices?.devices || []
+  if (showAllAudioDevices.value) return devices
+  return devices.filter((device) => device.recommended || device.selected || device.is_default)
+})
+
+const audioTestLabel = computed(() => {
+  const result = store.audioInputTest
+  if (!result) return ''
+  const rms = Number(result.rms_ratio || 0)
+  const peak = Number(result.peak_ratio || 0)
+  const device = result.device_name ? `${result.device_name} · ` : ''
+  return `${device}${result.message} · RMS ${(rms * 100).toFixed(2)}% · Peak ${(peak * 100).toFixed(2)}%`
 })
 
 async function save(promptRestart = false) {
@@ -344,6 +386,33 @@ function onMicrophoneChange() {
   const device = store.audioInputDevices?.devices.find((item) => item.index === index)
   store.config.client.input_device_index = index
   store.config.client.input_device_name = device?.name || ''
+  store.config.client.input_device_host_api = device?.host_api || ''
+  store.config.client.input_device_sample_rate = Number(device?.default_sample_rate || 0)
+}
+
+function resetMicrophone() {
+  selectedInputDevice.value = -1
+  store.config.client.input_device_index = -1
+  store.config.client.input_device_name = ''
+  store.config.client.input_device_host_api = ''
+  store.config.client.input_device_sample_rate = 0
+}
+
+function deviceLabel(device: AudioInputDevice) {
+  const tags = [
+    device.host_api || 'Unknown',
+    `${device.default_sample_rate || store.config.client.sample_rate}Hz`,
+    device.is_default ? '默认' : '',
+    device.recommended ? '推荐' : '',
+  ].filter(Boolean)
+  return `${device.name} · ${tags.join(' · ')}`
+}
+
+async function testMicrophone() {
+  const result = await store.testAudioInput(Number(selectedInputDevice.value ?? -1))
+  if (result && !result.has_signal) {
+    store.showToast('未检测到有效声音，建议切换同名 WASAPI/48000Hz 设备')
+  }
 }
 
 async function restartClient() {
@@ -487,8 +556,56 @@ watch(
   justify-content: flex-end;
 }
 
+.mic-stack {
+  min-width: 0;
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+}
+
 .mic-field {
-  width: min(100%, 260px);
+  width: min(100%, 300px);
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.inline-check input {
+  width: 14px;
+  height: 14px;
+}
+
+.mic-test {
+  max-width: 360px;
+  padding: 6px 8px;
+  border: 1px solid rgba(242, 140, 140, 0.28);
+  border-radius: 8px;
+  color: var(--danger);
+  background: rgba(242, 140, 140, 0.08);
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.mic-test.ok {
+  border-color: rgba(125, 220, 155, 0.3);
+  color: var(--accent);
+  background: rgba(125, 220, 155, 0.08);
+}
+
+.warning-row {
+  color: var(--warn);
+  background: rgba(240, 195, 106, 0.06);
+}
+
+.compact-note {
+  background: rgba(154, 216, 211, 0.04);
 }
 
 .key-field {

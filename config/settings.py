@@ -81,6 +81,8 @@ class ClientConfig:
     channels: int = 1
     input_device_index: int = -1
     input_device_name: str = ""
+    input_device_host_api: str = ""
+    input_device_sample_rate: int = 0
     output_mode: Literal["clipboard", "keyboard", "hybrid"] = "clipboard"
     restore_clipboard: bool = True
     paste_delay: float = 0.05

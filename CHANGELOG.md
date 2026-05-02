@@ -2,6 +2,12 @@
 
 ## 2026-05-02
 
+- Added a desktop startup overlay that shows runtime startup stages and keeps a restart-runtime action visible if API/ASR/client startup fails.
+- Added microphone diagnostics: `/api/audio/input-devices` now annotates host API, recommendation state, reason, and level-test support; `/api/audio/test-input` records a short in-memory sample and returns RMS/peak/signal status without saving audio.
+- Tightened microphone handling in the recording client: selected device host API/sample rate are persisted, the recorder opens streams using the selected device's default sample rate, sends the actual sample rate to ASR, logs RMS/peak levels, and reports near-silent input as `未检测到有效麦克风输入`.
+- Updated Settings with a filtered recommended microphone list, `显示全部设备`, per-device host API/sample-rate labels, and a microphone `测试` button.
+- Validation: Python compile passed; frontend typecheck/build passed; temporary API smoke on `55442` returned 5 recommended devices out of 20 and opened default/WASAPI 3.5mm devices for level testing; Tauri build passed with `CARGO_TARGET_DIR=frontend/src-tauri/target-codex-build5`; portable EXE was refreshed. Full `55342` runtime restart was blocked by an old no-command-line API process that the non-admin shell could not terminate.
+
 - Fixed startup race where `/api/start-all` launched the recording client before the ASR WebSocket was actually listening; it now waits for ASR readiness before starting the client.
 - Added per-recognition WebSocket connect retry in the client so recordings made during ASR warm-up wait briefly instead of failing immediately with `[WinError 1225]`.
 - Changed the current runtime configuration back to `caps_lock`; validation confirmed the client log reports `raw=caps_lock normalized=caps_lock`.

@@ -256,11 +256,21 @@ Short-press and archive checks:
 
 Microphone selection checks:
 
-1. `GET /api/audio/input-devices` should return `available=true` and a `devices` list.
-2. Settings should show a microphone dropdown with `系统默认麦克风` and detected input devices.
-3. Selecting a device persists `client.input_device_index` and `client.input_device_name`.
-4. Restart the client and confirm `logs\recorder_*.log` reports the chosen device index/name.
-5. If the selected device is missing, recording should fall back to the system default and Settings should show a warning.
+1. `GET /api/audio/input-devices` should return `available=true`, a `devices` list, and `recommended_count`.
+2. Settings should show a short recommended list by default. `3.5mm麦克风` and `麦克风阵列` should be visible if Windows exposes them through DirectSound/WASAPI. Use `显示全部设备` only for troubleshooting duplicates.
+3. Selecting a device persists `client.input_device_index`, `client.input_device_name`, `client.input_device_host_api`, and `client.input_device_sample_rate`.
+4. Click `测试`, speak for about 2 seconds, and confirm the result says `有声音` with non-trivial RMS/Peak values. If it says `太安静`, try the same physical microphone's WASAPI `48000Hz` entry before changing models.
+5. Restart the client and confirm `logs\recorder_*.log` reports the chosen device index/name and actual sample rate.
+6. If the selected device is missing, recording should fall back to the system default and Settings should show a warning.
+7. If a real-time recording has near-zero RMS/Peak, the client should show `未检测到有效麦克风输入` and skip ASR submission.
+
+Mic test API:
+
+```bat
+curl -X POST http://127.0.0.1:55342/api/audio/test-input -H "Content-Type: application/json" -d "{\"device_index\":20,\"seconds\":2}"
+```
+
+The API records only an in-memory sample and returns RMS/Peak; it does not save a recording file.
 
 History and layout checks:
 
@@ -353,5 +363,13 @@ Desktop validation:
 venv\Scripts\python.exe -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
 ```
 - VoiceType uses ASR/API/frontend ports `55341/55342/55343`. Old CapsWriter may still own `52341`, but that should no longer block this project. If `/api/status` reports conflicts on `55341`, run `stop.bat` and then `start.bat`.
+- If `scripts\start-runtime.ps1` says `55342` is still occupied and normal `stop.bat` cannot terminate the owner, check the PID with:
+
+```powershell
+Get-NetTCPConnection -LocalPort 55342 -State Listen | Select-Object LocalPort,OwningProcess
+Get-Process -Id <PID> | Select-Object Id,ProcessName,Path,StartTime
+```
+
+If `taskkill /PID <PID> /F` returns `Access is denied`, close VoiceType from an elevated Task Manager or reboot before launching the newest portable EXE. Do not start another EXE while the stale API process remains.
 - UI-managed server/client processes should not open black console windows; their logs are under `logs/managed_server_*.log` and `logs/managed_client_*.log`.
 - Settings saved from the Web console are written to `data/app_config.json`, which is intentionally ignored by Git.

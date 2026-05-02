@@ -94,6 +94,8 @@ class VoiceClient:
             channels=config.channels,
             input_device_index=config.input_device_index,
             input_device_name=config.input_device_name,
+            input_device_host_api=config.input_device_host_api,
+            input_device_sample_rate=config.input_device_sample_rate,
         )
         self._notifier = RecordingNotifier(
             enabled=config.notification_enabled,
@@ -335,6 +337,18 @@ class VoiceClient:
             self._notifier.output_failed("没有录到音频")
             return
 
+        audio_level = self._recorder.audio_level(audio_data)
+        logger.info(
+            "Recording level: rms=%s peak=%s signal=%s sample_rate=%s",
+            audio_level.get("rms_ratio"),
+            audio_level.get("peak_ratio"),
+            audio_level.get("has_signal"),
+            self._recorder.sample_rate,
+        )
+        if not audio_level.get("has_signal"):
+            self._notifier.output_failed("未检测到有效麦克风输入")
+            return
+
         task_id = str(uuid.uuid4())
         archive_dir = self._archive_dir(task_id)
         audio_path = ""
@@ -353,7 +367,8 @@ class VoiceClient:
             "audio_data": audio_data,
             "audio_path": audio_path,
             "transcript_path": transcript_path,
-            "sample_rate": self._config.sample_rate,
+            "sample_rate": self._recorder.sample_rate,
+            "audio_level": audio_level,
         })
 
     def _archive_dir(self, task_id: str) -> str:
@@ -426,6 +441,7 @@ class VoiceClient:
                 "model": result.get("model", ""),
                 "output_mode": self._config.output_mode,
                 "sample_rate": item.get("sample_rate", self._config.sample_rate),
+                "audio_level": item.get("audio_level", {}),
                 "time_start": result.get("time_start"),
                 "time_submit": result.get("time_submit"),
                 "time_complete": result.get("time_complete"),
@@ -514,6 +530,10 @@ def main():
             config.input_device_index = int(arg.split("=", 1)[1])
         elif arg.startswith("--input-device-name="):
             config.input_device_name = arg.split("=", 1)[1]
+        elif arg.startswith("--input-device-host-api="):
+            config.input_device_host_api = arg.split("=", 1)[1]
+        elif arg.startswith("--input-device-sample-rate="):
+            config.input_device_sample_rate = int(arg.split("=", 1)[1])
         elif arg.startswith("--min-press-seconds="):
             config.min_press_seconds = float(arg.split("=", 1)[1])
         elif arg == "--save-audio":

@@ -39,6 +39,8 @@ export interface AppConfig {
     channels: number
     input_device_index: number
     input_device_name: string
+    input_device_host_api: string
+    input_device_sample_rate: number
     output_mode: 'clipboard' | 'keyboard' | 'hybrid'
     save_audio: boolean
     audio_dir: string
@@ -151,10 +153,15 @@ export interface LlmConfig {
 export interface AudioInputDevice {
   index: number
   name: string
+  host_api: string
+  host_api_index: number
   channels: number
   default_sample_rate: number
   is_default: boolean
   selected: boolean
+  recommended: boolean
+  reason: string
+  level_supported: boolean
 }
 
 export interface AudioInputDevicesResponse {
@@ -164,7 +171,25 @@ export interface AudioInputDevicesResponse {
   selected_index: number
   selected_name: string
   selected_exists: boolean
+  recommended_count: number
   error: string
+}
+
+export interface AudioInputTestResult {
+  ok: boolean
+  message: string
+  has_signal: boolean
+  device_index?: number
+  device_name?: string
+  host_api?: string
+  sample_rate?: number
+  seconds?: number
+  bytes?: number
+  samples?: number
+  rms?: number
+  peak?: number
+  rms_ratio?: number
+  peak_ratio?: number
 }
 
 export interface TranscriptionTask {
@@ -234,6 +259,8 @@ const defaultConfig: AppConfig = {
     channels: 1,
     input_device_index: -1,
     input_device_name: '',
+    input_device_host_api: '',
+    input_device_sample_rate: 0,
     output_mode: 'clipboard',
     save_audio: true,
     audio_dir: '',
@@ -286,6 +313,8 @@ export const useAppStore = defineStore('app', () => {
   })
   const transcriptions = ref<TranscriptionTask[]>([])
   const audioInputDevices = ref<AudioInputDevicesResponse | null>(null)
+  const audioInputTest = ref<AudioInputTestResult | null>(null)
+  const audioInputTesting = ref(false)
   const runtimeDiagnostics = ref('')
   const runtimeRestarting = ref(false)
   const lastError = ref('')
@@ -462,6 +491,21 @@ export const useAppStore = defineStore('app', () => {
   async function fetchAudioInputDevices() {
     const data = await apiFetch<AudioInputDevicesResponse>('/audio/input-devices')
     if (data) audioInputDevices.value = data
+    return data
+  }
+
+  async function testAudioInput(deviceIndex = config.value.client.input_device_index) {
+    audioInputTesting.value = true
+    const data = await apiFetch<AudioInputTestResult>('/audio/test-input', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_index: Number(deviceIndex ?? -1), seconds: 2 }),
+    })
+    if (data) {
+      audioInputTest.value = data
+      showToast(data.message || (data.has_signal ? '有声音' : '太安静'))
+    }
+    audioInputTesting.value = false
     return data
   }
 
@@ -794,10 +838,10 @@ export const useAppStore = defineStore('app', () => {
     serverPortOpen, serverConflict, clientConflict, serverProcessCount, clientProcessCount,
     history, errorMarks, wsConnected, currentPartial, topWords,
     config, models, logs, recentIssues, hotwordContent, selectedHotword, toastMessage,
-    ffmpeg, llmConfig, transcriptions, audioInputDevices, runtimeDiagnostics, runtimeRestarting, hardware, benchmarks, benchmarkingModels, lastError,
+    ffmpeg, llmConfig, transcriptions, audioInputDevices, audioInputTest, audioInputTesting, runtimeDiagnostics, runtimeRestarting, hardware, benchmarks, benchmarkingModels, lastError,
     apiBase: API_BASE,
     latestEntry, totalEntries, avgDelay, serviceLabel, selectedModel, accelerationState, accelerationRecommendation,
-    fetchStatus, fetchHealth, fetchConfig, fetchAudioInputDevices, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, applyAccelerationRecommendation,
+    fetchStatus, fetchHealth, fetchConfig, fetchAudioInputDevices, testAudioInput, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, applyAccelerationRecommendation,
     startServer, stopServer, startClient, stopClient, restartClient, startAll, stopAll,
     fetchRuntimeDiagnostics, restartRuntime,
     fetchHistory, clearHistory, deleteHistoryEntry, addErrorMark, fetchErrorMarks,
