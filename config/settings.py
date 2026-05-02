@@ -79,6 +79,8 @@ class ClientConfig:
     mouse_button: int = 2
     sample_rate: int = 48000
     channels: int = 1
+    input_device_index: int = -1
+    input_device_name: str = ""
     output_mode: Literal["clipboard", "keyboard", "hybrid"] = "clipboard"
     restore_clipboard: bool = True
     paste_delay: float = 0.05

@@ -115,11 +115,43 @@ button {
 }
 
 .error-strip {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
   padding: 8px 14px;
   border-bottom: 1px solid rgba(242, 140, 140, 0.25);
   color: var(--danger);
   background: rgba(242, 140, 140, 0.08);
   font-size: 12px;
+}
+
+.error-strip strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--danger);
+}
+
+.error-strip p,
+.error-strip small,
+.error-strip pre {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.error-strip pre {
+  max-height: 120px;
+  margin-top: 6px;
+  overflow: auto;
+  color: var(--muted);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+}
+
+.error-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
 }
 
 .workspace {

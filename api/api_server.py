@@ -123,6 +123,9 @@ class LLMConfigRequest(BaseModel):
 class ProcessManager:
     @staticmethod
     def _find_python() -> str:
+        project_python = os.path.join(BASE_DIR, "venv", "Scripts", "python.exe")
+        if os.path.exists(project_python):
+            return project_python
         return sys.executable
 
     @staticmethod
@@ -170,6 +173,8 @@ class ProcessManager:
             f"--key={config.shortcut_key}",
             f"--audio-dir={config.audio_dir}",
             f"--archive-root={config.archive_root}",
+            f"--input-device-index={config.input_device_index}",
+            f"--input-device-name={config.input_device_name}",
             f"--min-press-seconds={config.min_press_seconds}",
         ]
         args.append("--save-audio" if config.save_audio else "--no-save-audio")
@@ -781,6 +786,61 @@ async def put_config(req: ConfigUpdateRequest):
         values["server"]["model_dir"] = ""
     config = update_app_config(values)
     return {"status": "saved", "config": app_config_to_dict(config)}
+
+
+@app.get("/api/audio/input-devices")
+async def get_audio_input_devices():
+    config = load_app_config().client
+    try:
+        import pyaudio
+    except Exception as exc:
+        return {
+            "available": False,
+            "devices": [],
+            "default_index": -1,
+            "selected_index": config.input_device_index,
+            "selected_name": config.input_device_name,
+            "selected_exists": False,
+            "error": f"PyAudio unavailable: {exc}",
+        }
+
+    audio = pyaudio.PyAudio()
+    devices = []
+    default_index = -1
+    try:
+        try:
+            default_info = audio.get_default_input_device_info()
+            default_index = int(default_info.get("index", -1))
+        except Exception:
+            default_index = -1
+
+        for index in range(audio.get_device_count()):
+            info = audio.get_device_info_by_index(index)
+            max_channels = int(info.get("maxInputChannels", 0) or 0)
+            if max_channels <= 0:
+                continue
+            name = str(info.get("name", ""))
+            devices.append({
+                "index": index,
+                "name": name,
+                "channels": max_channels,
+                "default_sample_rate": int(float(info.get("defaultSampleRate", 0) or 0)),
+                "is_default": index == default_index,
+                "selected": index == config.input_device_index,
+            })
+    finally:
+        audio.terminate()
+
+    selected_exists = config.input_device_index < 0 or any(device["index"] == config.input_device_index for device in devices)
+    return {
+        "available": True,
+        "devices": devices,
+        "default_index": default_index,
+        "selected_index": config.input_device_index,
+        "selected_name": config.input_device_name,
+        "selected_exists": selected_exists,
+        "error": "",
+    }
 
 
 @app.get("/api/models")

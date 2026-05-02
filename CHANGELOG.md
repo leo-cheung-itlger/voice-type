@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-05-02
+
+- Promoted the desktop shell to version `1.0.0` across Tauri and Cargo, and added a portable release helper that creates `dist/releases/VoiceType-1.0.0/VoiceType-1.0.0-portable.exe`.
+- Added Tauri single-instance handling so repeat launches focus the existing window instead of starting another runtime; tray creation now uses the configured app icon explicitly.
+- Added Tauri runtime diagnostics and restart commands, plus a frontend diagnostic strip that replaces raw `Failed to fetch` with the API URL and a runtime restart action.
+- Tightened desktop runtime startup: `start-runtime.ps1` now cleans project-owned old processes first, fails clearly if `55341/55342/55343` remain occupied, and API-managed server/client launches use the project `venv` Python path.
+- Added microphone selection: `/api/audio/input-devices`, persisted `client.input_device_index` / `client.input_device_name`, PyAudio stream device selection with default fallback, and a Settings microphone dropdown.
+- Validation: Python compile passed; frontend typecheck and production build passed; clean `start-runtime.ps1` smoke returned JSON health and input devices; browser Settings smoke showed microphone devices with no console errors; Tauri `1.0.0` build passed under `target-codex-build4`; portable EXE was created and repeat-launch smoke kept a single desktop process.
+
 ## 2026-05-01
 
 - Reworked the recording client's global shortcut listener from polling to an event-based `keyboard.hook()` path, with normalized shortcut names for `caps_lock`, `left_shift`, `right_shift`, `shift`, and related control keys.

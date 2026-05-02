@@ -35,6 +35,10 @@ export interface AppConfig {
     server_host: string
     server_port: number
     shortcut_key: string
+    sample_rate: number
+    channels: number
+    input_device_index: number
+    input_device_name: string
     output_mode: 'clipboard' | 'keyboard' | 'hybrid'
     save_audio: boolean
     audio_dir: string
@@ -144,6 +148,25 @@ export interface LlmConfig {
   max_segment_chars: number
 }
 
+export interface AudioInputDevice {
+  index: number
+  name: string
+  channels: number
+  default_sample_rate: number
+  is_default: boolean
+  selected: boolean
+}
+
+export interface AudioInputDevicesResponse {
+  available: boolean
+  devices: AudioInputDevice[]
+  default_index: number
+  selected_index: number
+  selected_name: string
+  selected_exists: boolean
+  error: string
+}
+
 export interface TranscriptionTask {
   task_id: string
   status: 'queued' | 'transcribing' | 'polishing' | 'completed' | 'failed' | 'cancelled'
@@ -207,6 +230,10 @@ const defaultConfig: AppConfig = {
     server_host: '127.0.0.1',
     server_port: 55341,
     shortcut_key: 'caps_lock',
+    sample_rate: 48000,
+    channels: 1,
+    input_device_index: -1,
+    input_device_name: '',
     output_mode: 'clipboard',
     save_audio: true,
     audio_dir: '',
@@ -258,6 +285,9 @@ export const useAppStore = defineStore('app', () => {
     max_segment_chars: 1800,
   })
   const transcriptions = ref<TranscriptionTask[]>([])
+  const audioInputDevices = ref<AudioInputDevicesResponse | null>(null)
+  const runtimeDiagnostics = ref('')
+  const runtimeRestarting = ref(false)
   const lastError = ref('')
   const toastMessage = ref('')
   let toastTimer: ReturnType<typeof setTimeout> | null = null
@@ -384,7 +414,10 @@ export const useAppStore = defineStore('app', () => {
       lastError.value = ''
       return data
     } catch (error) {
-      lastError.value = error instanceof Error ? error.message : String(error)
+      const message = error instanceof Error ? error.message : String(error)
+      lastError.value = message === 'Failed to fetch'
+        ? `无法连接 VoiceType API：${API_BASE}${path}。请确认运行时已启动，或点击“重新启动运行时”。`
+        : message
       return null
     }
   }
@@ -424,6 +457,12 @@ export const useAppStore = defineStore('app', () => {
   async function fetchConfig() {
     const data = await apiFetch<AppConfig>('/config')
     if (data) config.value = data
+  }
+
+  async function fetchAudioInputDevices() {
+    const data = await apiFetch<AudioInputDevicesResponse>('/audio/input-devices')
+    if (data) audioInputDevices.value = data
+    return data
   }
 
   async function saveConfig() {
@@ -524,6 +563,34 @@ export const useAppStore = defineStore('app', () => {
   async function restartClient() {
     await stopClient()
     await startClient()
+  }
+
+  async function tauriInvoke<T = any>(command: string): Promise<T | null> {
+    const tauriWindow = window as any
+    if (!tauriWindow.__TAURI_INTERNALS__) return null
+    try {
+      const mod = await import('@tauri-apps/api/core')
+      return await mod.invoke<T>(command)
+    } catch (error) {
+      lastError.value = error instanceof Error ? error.message : String(error)
+      return null
+    }
+  }
+
+  async function fetchRuntimeDiagnostics() {
+    const data = await tauriInvoke<string>('runtime_diagnostics')
+    if (data) runtimeDiagnostics.value = data
+    return data
+  }
+
+  async function restartRuntime() {
+    runtimeRestarting.value = true
+    const data = await tauriInvoke<string>('restart_runtime')
+    if (data) showToast('正在重启运行时')
+    await new Promise((resolve) => setTimeout(resolve, 2200))
+    await Promise.all([fetchStatus(), fetchHealth(), fetchConfig(), fetchAudioInputDevices()])
+    runtimeRestarting.value = false
+    return data
   }
 
   async function startAll() {
@@ -727,10 +794,12 @@ export const useAppStore = defineStore('app', () => {
     serverPortOpen, serverConflict, clientConflict, serverProcessCount, clientProcessCount,
     history, errorMarks, wsConnected, currentPartial, topWords,
     config, models, logs, recentIssues, hotwordContent, selectedHotword, toastMessage,
-    ffmpeg, llmConfig, transcriptions, hardware, benchmarks, benchmarkingModels, lastError,
+    ffmpeg, llmConfig, transcriptions, audioInputDevices, runtimeDiagnostics, runtimeRestarting, hardware, benchmarks, benchmarkingModels, lastError,
+    apiBase: API_BASE,
     latestEntry, totalEntries, avgDelay, serviceLabel, selectedModel, accelerationState, accelerationRecommendation,
-    fetchStatus, fetchHealth, fetchConfig, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, applyAccelerationRecommendation,
+    fetchStatus, fetchHealth, fetchConfig, fetchAudioInputDevices, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, applyAccelerationRecommendation,
     startServer, stopServer, startClient, stopClient, restartClient, startAll, stopAll,
+    fetchRuntimeDiagnostics, restartRuntime,
     fetchHistory, clearHistory, deleteHistoryEntry, addErrorMark, fetchErrorMarks,
     fetchStats, fetchLogs, fetchHotword, saveHotword,
     fetchFfmpegStatus, fetchLlmConfig, saveLlmConfig,

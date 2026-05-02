@@ -14,6 +14,20 @@ if (-not (Test-Path $python)) {
 
 New-Item -ItemType Directory -Force -Path $logsPath | Out-Null
 
+$stopScript = Join-Path $PSScriptRoot "stop-dev.ps1"
+if (Test-Path $stopScript) {
+    & $stopScript -Root $rootPath | Out-Null
+    Start-Sleep -Seconds 1
+}
+
+foreach ($port in @(55341, 55342, 55343)) {
+    $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+    if ($listener) {
+        $owners = ($listener | Select-Object -ExpandProperty OwningProcess -Unique) -join ", "
+        throw "Port $port is still occupied by PID(s): $owners"
+    }
+}
+
 $apiReady = $false
 try {
     Invoke-RestMethod -Uri "$apiUrl/api/status" -TimeoutSec 2 | Out-Null

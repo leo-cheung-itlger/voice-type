@@ -70,6 +70,14 @@ npm run desktop:dev
 
 The Tauri development shell opens a 480x720 desktop window, starts the Python runtime through `scripts\start-runtime.ps1`, hides to tray when the window close button is clicked, and fully exits through the tray Quit menu.
 
+Current recommended user entry:
+
+```text
+dist\releases\VoiceType-1.0.0\VoiceType-1.0.0-portable.exe
+```
+
+Do not open EXE files from `target\release\deps`, `target\release\build`, or `target-codex-build*\deps`; those are internal build artifacts. Repeat-launching the portable EXE should focus the existing window rather than start another runtime.
+
 Windows Tauri builds require the Microsoft MSVC linker. If `npm run desktop:build` fails with `link.exe not found`, install Visual Studio 2022 Build Tools with the C++ desktop workload, then open a new terminal and rerun the build. Check the linker with:
 
 ```bat
@@ -92,8 +100,9 @@ npm run desktop:build
 Current Windows build outputs:
 
 - `frontend\src-tauri\target\release\voicetype.exe`
-- `frontend\src-tauri\target\release\bundle\msi\VoiceType_0.1.0_x64_en-US.msi`
-- `frontend\src-tauri\target\release\bundle\nsis\VoiceType_0.1.0_x64-setup.exe`
+- `frontend\src-tauri\target\release\bundle\msi\VoiceType_1.0.0_x64_en-US.msi`
+- `frontend\src-tauri\target\release\bundle\nsis\VoiceType_1.0.0_x64-setup.exe`
+- `dist\releases\VoiceType-1.0.0\VoiceType-1.0.0-portable.exe`
 
 Do not treat the first package as a final installer. The first target should be a portable alpha package used from this project tree, with external models and the existing `venv`. A formal installer should come after runtime lifecycle, model selection, and update behavior are stable.
 
@@ -105,6 +114,12 @@ cmd /c "\"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 ```
 
 The temporary EXE is written to `frontend\src-tauri\target-codex-build\release\voicetype.exe`. Additional temporary targets matching `frontend\src-tauri\target-codex-build*` are ignored by Git.
+
+Create the current portable release from a successful Tauri release build:
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\create-portable-release.ps1 -Root C:\Users\13678\Documents\.Projects\voice-type -Version 1.0.0 -TargetRelease C:\Users\13678\Documents\.Projects\voice-type\frontend\src-tauri\target-codex-build4\release
+```
 
 ## Validation Order
 
@@ -231,6 +246,14 @@ Short-press and archive checks:
 3. Hold the shortcut longer than the threshold; the task should create `data\archive\YYYY\MM\DD\HHMMSS_<task_id>\recording.wav` and `result.json`.
 4. The topmost prompt should move from recording to analyzing with seconds, then success with a one-decimal duration.
 5. History and Dashboard should show the result duration to one decimal place.
+
+Microphone selection checks:
+
+1. `GET /api/audio/input-devices` should return `available=true` and a `devices` list.
+2. Settings should show a microphone dropdown with `系统默认麦克风` and detected input devices.
+3. Selecting a device persists `client.input_device_index` and `client.input_device_name`.
+4. Restart the client and confirm `logs\recorder_*.log` reports the chosen device index/name.
+5. If the selected device is missing, recording should fall back to the system default and Settings should show a warning.
 
 History and layout checks:
 

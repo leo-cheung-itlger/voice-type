@@ -41,6 +41,25 @@
         </label>
         <label class="row setting-row">
           <span>
+            <span class="value">麦克风</span>
+            <span class="label">{{ microphoneHint }}</span>
+          </span>
+          <div class="inline-controls mic-controls">
+            <select v-model.number="selectedInputDevice" class="field mic-field" @change="onMicrophoneChange">
+              <option :value="-1">系统默认麦克风</option>
+              <option
+                v-for="device in store.audioInputDevices?.devices || []"
+                :key="device.index"
+                :value="device.index"
+              >
+                {{ device.name }}{{ device.is_default ? ' · 默认' : '' }}
+              </option>
+            </select>
+            <button class="btn btn-small btn-ghost" @click="store.fetchAudioInputDevices()">刷新</button>
+          </div>
+        </label>
+        <label class="row setting-row">
+          <span>
             <span class="value">保存录音</span>
             <span class="label">写入结构化归档目录</span>
           </span>
@@ -225,6 +244,7 @@ const captureMode = ref(false)
 const saveState = ref('自动保存')
 const restartPrompt = ref(false)
 const activeClientShortcut = ref('')
+const selectedInputDevice = ref(-1)
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let saveStarted = false
 
@@ -248,6 +268,16 @@ const benchmarkHint = computed(() => {
   if (!result.exists) return '模型未安装'
   if (!result.ok) return result.error || '测试失败'
   return `最近耗时 ${Number(result.recognition_seconds || result.inference_seconds || 0).toFixed(2)}s · ${result.acceleration || 'unknown'}`
+})
+
+const microphoneHint = computed(() => {
+  const devices = store.audioInputDevices
+  if (!devices) return '等待检测输入设备'
+  if (!devices.available) return devices.error || 'PyAudio 不可用'
+  if (!devices.selected_exists) return '所选麦克风已不存在，将回退系统默认'
+  const selected = devices.devices.find((device) => device.index === store.config.client.input_device_index)
+  if (!selected) return '使用系统默认麦克风，客户端重启后生效'
+  return `${selected.channels} 通道 · ${selected.default_sample_rate || store.config.client.sample_rate}Hz，客户端重启后生效`
 })
 
 async function save(promptRestart = false) {
@@ -307,6 +337,13 @@ function onCaptureKeydown(event: KeyboardEvent) {
   event.stopPropagation()
   store.config.client.shortcut_key = normalizeKey(event)
   captureMode.value = false
+}
+
+function onMicrophoneChange() {
+  const index = Number(selectedInputDevice.value)
+  const device = store.audioInputDevices?.devices.find((item) => item.index === index)
+  store.config.client.input_device_index = index
+  store.config.client.input_device_name = device?.name || ''
 }
 
 async function restartClient() {
@@ -395,9 +432,11 @@ async function applyRecommendation() {
 
 onMounted(async () => {
   await store.fetchConfig()
+  selectedInputDevice.value = Number(store.config.client.input_device_index ?? -1)
   activeClientShortcut.value = normalizeShortcut(store.config.client.shortcut_key)
   store.fetchModels()
   store.fetchHardware()
+  store.fetchAudioInputDevices()
   store.fetchBenchmarks()
   store.fetchLogs()
   window.addEventListener('keydown', onCaptureKeydown, true)
@@ -414,6 +453,13 @@ onBeforeUnmount(() => {
 watch(
   () => JSON.stringify(store.config),
   () => queueSave(),
+)
+
+watch(
+  () => store.config.client.input_device_index,
+  (value) => {
+    selectedInputDevice.value = Number(value ?? -1)
+  },
 )
 </script>
 
@@ -434,6 +480,15 @@ watch(
 
 .compact {
   width: 150px;
+}
+
+.mic-controls {
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.mic-field {
+  width: min(100%, 260px);
 }
 
 .key-field {

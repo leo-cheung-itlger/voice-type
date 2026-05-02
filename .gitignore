@@ -20,6 +20,7 @@ frontend/src-tauri/target-codex-build*/
 vs_BuildTools.exe
 frontend/.vite/
 frontend/.vite-temp/
+dist/releases/
 
 # Runtime data
 logs/

@@ -11,10 +11,19 @@ logger = setup_logger("recorder")
 
 
 class AudioRecorder:
-    def __init__(self, sample_rate: int = 48000, channels: int = 1, chunk_size: int = 960):
+    def __init__(
+        self,
+        sample_rate: int = 48000,
+        channels: int = 1,
+        chunk_size: int = 960,
+        input_device_index: int = -1,
+        input_device_name: str = "",
+    ):
         self._sample_rate = sample_rate
         self._channels = channels
         self._chunk_size = chunk_size
+        self._input_device_index = input_device_index
+        self._input_device_name = input_device_name
         self._recording = False
         self._audio_chunks: list = []
         self._stream = None
@@ -25,20 +34,39 @@ class AudioRecorder:
             import pyaudio
 
             self._pyaudio = pyaudio.PyAudio()
-            self._stream = self._pyaudio.open(
-                format=pyaudio.paInt16,
-                channels=self._channels,
-                rate=self._sample_rate,
-                input=True,
-                frames_per_buffer=self._chunk_size,
-            )
+            selected_device = self._input_device_index if self._input_device_index >= 0 else None
+            try:
+                self._stream = self._open_stream(pyaudio, selected_device)
+            except Exception as selected_error:
+                if selected_device is None:
+                    raise
+                logger.warning(
+                    "Selected input device failed, falling back to default: index=%s name=%s error=%s",
+                    self._input_device_index,
+                    self._input_device_name,
+                    selected_error,
+                )
+                self._stream = self._open_stream(pyaudio, None)
             self._audio_chunks.clear()
             self._recording = True
-            logger.info(f"Recording started (rate={self._sample_rate}, channels={self._channels})")
+            device_label = "default" if selected_device is None else f"{self._input_device_index}:{self._input_device_name}"
+            logger.info(f"Recording started (rate={self._sample_rate}, channels={self._channels}, device={device_label})")
             return True
         except Exception as e:
             logger.error(f"Failed to start recording: {e}")
             return False
+
+    def _open_stream(self, pyaudio_module, input_device_index: Optional[int]):
+        kwargs = {
+            "format": pyaudio_module.paInt16,
+            "channels": self._channels,
+            "rate": self._sample_rate,
+            "input": True,
+            "frames_per_buffer": self._chunk_size,
+        }
+        if input_device_index is not None:
+            kwargs["input_device_index"] = input_device_index
+        return self._pyaudio.open(**kwargs)
 
     def read_chunk(self) -> Optional[bytes]:
         if not self._recording or self._stream is None:

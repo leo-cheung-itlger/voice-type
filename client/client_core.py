@@ -92,6 +92,8 @@ class VoiceClient:
         self._recorder = AudioRecorder(
             sample_rate=config.sample_rate,
             channels=config.channels,
+            input_device_index=config.input_device_index,
+            input_device_name=config.input_device_name,
         )
         self._notifier = RecordingNotifier(
             enabled=config.notification_enabled,
@@ -494,6 +496,10 @@ def main():
             config.audio_dir = arg.split("=", 1)[1]
         elif arg.startswith("--archive-root="):
             config.archive_root = arg.split("=", 1)[1]
+        elif arg.startswith("--input-device-index="):
+            config.input_device_index = int(arg.split("=", 1)[1])
+        elif arg.startswith("--input-device-name="):
+            config.input_device_name = arg.split("=", 1)[1]
         elif arg.startswith("--min-press-seconds="):
             config.min_press_seconds = float(arg.split("=", 1)[1])
         elif arg == "--save-audio":
