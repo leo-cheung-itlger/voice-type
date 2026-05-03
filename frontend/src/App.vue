@@ -3,7 +3,7 @@
     <header class="topbar">
       <div>
         <div class="brand">VoiceType</div>
-        <div class="subline">{{ store.serviceLabel }} · {{ store.config.server.model }}</div>
+        <div class="subline">{{ store.serviceLabel }} · {{ store.config.server.model }} · {{ store.frontendSource }}</div>
       </div>
       <div class="status-pills" aria-label="service status">
         <span class="pill" :class="{ on: store.serverRunning }">ASR</span>
@@ -12,7 +12,7 @@
       </div>
     </header>
 
-    <section v-if="store.lastError" class="error-strip">
+    <section v-if="store.lastError && !startupVisible" class="error-strip">
       <div>
         <strong>运行时连接异常</strong>
         <p>{{ store.lastError }}</p>
@@ -74,6 +74,8 @@ let unlistenRuntimeToast: (() => void) | null = null
 const startupVisible = ref(true)
 const startupStage = ref('检查运行时脚本')
 const startupDetail = ref('正在连接本地 VoiceType API')
+const startupStartedAt = ref(Date.now())
+const startupErrorDelayMs = 45000
 const startupFailed = computed(() => Boolean(store.lastError && startupVisible.value))
 
 async function wireTauriEvents() {
@@ -95,6 +97,10 @@ async function wireTauriEvents() {
 }
 
 function updateStartupState() {
+  const withinStartupGrace = Date.now() - startupStartedAt.value < startupErrorDelayMs
+  if (withinStartupGrace && store.lastError.startsWith('无法连接 VoiceType API')) {
+    store.lastError = ''
+  }
   if (store.lastError) {
     startupVisible.value = true
     startupStage.value = '启动失败'
@@ -123,6 +129,8 @@ function updateStartupState() {
 }
 
 async function restartStartupRuntime() {
+  startupStartedAt.value = Date.now()
+  store.suppressConnectionErrors(startupErrorDelayMs)
   startupVisible.value = true
   startupStage.value = '重新启动运行时'
   startupDetail.value = '正在清理旧进程并重新拉起 API/ASR/client'
@@ -132,6 +140,8 @@ async function restartStartupRuntime() {
 
 onMounted(async () => {
   await wireTauriEvents()
+  startupStartedAt.value = Date.now()
+  store.suppressConnectionErrors(startupErrorDelayMs)
   startupStage.value = '连接本地 API'
   await Promise.all([
     store.fetchConfig(),

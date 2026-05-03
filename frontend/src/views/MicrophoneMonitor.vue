@@ -130,7 +130,7 @@ async function selectDevice(device: AudioLevelDevice) {
   store.config.client.input_device_host_api = device.host_api || ''
   store.config.client.input_device_sample_rate = Number(device.default_sample_rate || 0)
   await store.saveConfig()
-  store.showToast('已选择麦克风，请重启客户端')
+  store.showToast('已选择麦克风，下次按键自动生效')
 }
 
 onMounted(async () => {

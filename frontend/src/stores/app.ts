@@ -168,7 +168,10 @@ export interface AudioInputDevicesResponse {
   available: boolean
   devices: AudioInputDevice[]
   default_index: number
+  smart_default_index?: number
+  smart_default_name?: string
   selected_index: number
+  selected_resolved_index?: number
   selected_name: string
   selected_exists: boolean
   recommended_count: number
@@ -255,6 +258,8 @@ const API_BASE = (() => {
   return 'http://127.0.0.1:55342/api'
 })()
 
+const FRONTEND_SOURCE = import.meta.env.DEV ? 'live-ui' : 'bundled-exe'
+
 const WS_RECOGNITION_URL = (() => {
   const configured = import.meta.env.VITE_WS_RECOGNITION_URL
   if (configured) return configured
@@ -340,6 +345,8 @@ export const useAppStore = defineStore('app', () => {
   const audioInputDevices = ref<AudioInputDevicesResponse | null>(null)
   const audioInputTest = ref<AudioInputTestResult | null>(null)
   const audioInputTesting = ref(false)
+  const audioInputTestPhase = ref<'idle' | 'recording' | 'playing' | 'done' | 'error'>('idle')
+  const audioInputTestProgress = ref(0)
   const audioLevelScan = ref<AudioLevelScanResponse | null>(null)
   const audioLevelScanning = ref(false)
   const playingTaskId = ref('')
@@ -347,8 +354,10 @@ export const useAppStore = defineStore('app', () => {
   const runtimeRestarting = ref(false)
   const lastError = ref('')
   const toastMessage = ref('')
+  const connectionErrorQuietUntil = ref(0)
   let toastTimer: ReturnType<typeof setTimeout> | null = null
   let activeAudio: HTMLAudioElement | null = null
+  let audioInputTestProgressTimer: ReturnType<typeof setInterval> | null = null
   const ws: { current: WebSocket | null } = { current: null }
 
   const latestEntry = computed(() => history.value[history.value.length - 1] || null)
@@ -381,6 +390,17 @@ export const useAppStore = defineStore('app', () => {
     return relevantFailures[0] || null
   }
   const accelerationState = computed<AccelerationState>(() => {
+    if (!hardware.value) {
+      return {
+        label: '检测中',
+        detail: '正在检测 GPU/CUDA 状态',
+        active: false,
+        backend: config.value.server.gpu ? config.value.server.gpu_backend : 'cpu',
+        cudaReady: false,
+        vulkanSelected: false,
+        blocks: [],
+      }
+    }
     const torch = hardware.value?.torch
     const backend = config.value.server.gpu ? config.value.server.gpu_backend : 'cpu'
     const selected = selectedModel.value
@@ -390,7 +410,6 @@ export const useAppStore = defineStore('app', () => {
     if (!config.value.server.gpu) {
       blocks.push('设置中已关闭 GPU 加速。')
     } else if (config.value.server.gpu_backend === 'cuda') {
-      if (!hardware.value?.nvidia_gpu) blocks.push('nvidia-smi 未检测到 NVIDIA GPU。')
       if (!torch?.available) blocks.push(torch?.error || 'PyTorch 不可用。')
       else if (!torch.cuda_available) blocks.push('当前 PyTorch 未启用 CUDA。')
     } else if (config.value.server.gpu_backend === 'vulkan' && isQwen) {
@@ -401,7 +420,7 @@ export const useAppStore = defineStore('app', () => {
 
     const cudaReady = Boolean(config.value.server.gpu && config.value.server.gpu_backend === 'cuda' && torch?.cuda_available)
     const vulkanSelected = Boolean(config.value.server.gpu && config.value.server.gpu_backend === 'vulkan')
-    const active = Boolean(config.value.server.gpu && blocks.length === 0)
+    const active = Boolean(config.value.server.gpu && (blocks.length === 0 || cudaReady))
     const label = !config.value.server.gpu
       ? 'CPU'
       : cudaReady
@@ -473,11 +492,17 @@ export const useAppStore = defineStore('app', () => {
       return data
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      lastError.value = message === 'Failed to fetch'
-        ? `无法连接 VoiceType API：${API_BASE}${path}。请确认运行时已启动，或点击“重新启动运行时”。`
-        : message
+      if (!(message === 'Failed to fetch' && Date.now() < connectionErrorQuietUntil.value)) {
+        lastError.value = message === 'Failed to fetch'
+          ? `无法连接 VoiceType API：${API_BASE}${path}。请确认运行时已启动，或点击“重新启动运行时”。`
+          : message
+      }
       return null
     }
+  }
+
+  function suppressConnectionErrors(ms: number) {
+    connectionErrorQuietUntil.value = Math.max(connectionErrorQuietUntil.value, Date.now() + ms)
   }
 
   async function fetchStatus() {
@@ -524,7 +549,13 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function testAudioInput(deviceIndex = config.value.client.input_device_index) {
+    if (audioInputTesting.value) return audioInputTest.value
+    stopAudio()
+    clearAudioInputTestProgress()
     audioInputTesting.value = true
+    audioInputTestPhase.value = 'recording'
+    audioInputTestProgress.value = 0
+    startAudioInputTestProgress(3000)
     const data = await apiFetch<AudioInputTestResult>('/audio/test-input', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -532,11 +563,19 @@ export const useAppStore = defineStore('app', () => {
     })
     if (data) {
       audioInputTest.value = data
-      showToast(data.message || (data.has_signal ? '有声音' : '太安静'))
+      audioInputTestProgress.value = 1
       if (data.audio_wav_base64) {
-        playAudioSource(`data:audio/wav;base64,${data.audio_wav_base64}`, 'mic-test')
+        audioInputTestPhase.value = 'playing'
+        audioInputTestProgress.value = 0
+        await playAudioSourceOnce(`data:audio/wav;base64,${data.audio_wav_base64}`, 'mic-test')
+        audioInputTestPhase.value = 'done'
+      } else {
+        audioInputTestPhase.value = data.ok ? 'done' : 'error'
       }
+    } else {
+      audioInputTestPhase.value = 'error'
     }
+    clearAudioInputTestProgress()
     audioInputTesting.value = false
     return data
   }
@@ -886,6 +925,52 @@ export const useAppStore = defineStore('app', () => {
     playingTaskId.value = ''
   }
 
+  function clearAudioInputTestProgress() {
+    if (audioInputTestProgressTimer) {
+      clearInterval(audioInputTestProgressTimer)
+      audioInputTestProgressTimer = null
+    }
+  }
+
+  function startAudioInputTestProgress(durationMs: number) {
+    clearAudioInputTestProgress()
+    const startedAt = performance.now()
+    audioInputTestProgressTimer = setInterval(() => {
+      audioInputTestProgress.value = Math.min(0.98, (performance.now() - startedAt) / durationMs)
+    }, 50)
+  }
+
+  function playAudioSourceOnce(source: string, id: string) {
+    stopAudio()
+    return new Promise<void>((resolve) => {
+      activeAudio = new Audio(source)
+      playingTaskId.value = id
+      let resolved = false
+      const finish = (phase: 'done' | 'error') => {
+        if (resolved) return
+        resolved = true
+        clearAudioInputTestProgress()
+        audioInputTestProgress.value = 1
+        if (phase === 'error') showToast('播放失败')
+        if (playingTaskId.value === id) playingTaskId.value = ''
+        activeAudio = null
+        resolve()
+      }
+      activeAudio.onloadedmetadata = () => {
+        const durationMs = Number.isFinite(activeAudio?.duration) && activeAudio?.duration
+          ? activeAudio.duration * 1000
+          : 3000
+        startAudioInputTestProgress(durationMs)
+      }
+      activeAudio.onended = () => finish('done')
+      activeAudio.onerror = () => finish('error')
+      activeAudio.play().catch((error) => {
+        lastError.value = error instanceof Error ? error.message : String(error)
+        finish('error')
+      })
+    })
+  }
+
   function playAudioSource(source: string, id: string) {
     if (playingTaskId.value === id) {
       stopAudio()
@@ -924,12 +1009,13 @@ export const useAppStore = defineStore('app', () => {
     serverPortOpen, serverConflict, clientConflict, serverProcessCount, clientProcessCount,
     history, errorMarks, wsConnected, currentPartial, topWords,
     config, models, logs, recentIssues, hotwordContent, selectedHotword, toastMessage,
-    ffmpeg, llmConfig, transcriptions, audioInputDevices, audioInputTest, audioInputTesting, audioLevelScan, audioLevelScanning, playingTaskId, runtimeDiagnostics, runtimeRestarting, hardware, benchmarks, benchmarkingModels, lastError,
+    ffmpeg, llmConfig, transcriptions, audioInputDevices, audioInputTest, audioInputTesting, audioInputTestPhase, audioInputTestProgress, audioLevelScan, audioLevelScanning, playingTaskId, runtimeDiagnostics, runtimeRestarting, hardware, benchmarks, benchmarkingModels, lastError,
     apiBase: API_BASE,
+    frontendSource: FRONTEND_SOURCE,
     latestEntry, totalEntries, avgDelay, serviceLabel, selectedModel, accelerationState, accelerationRecommendation,
     fetchStatus, fetchHealth, fetchConfig, fetchAudioInputDevices, testAudioInput, scanAudioLevels, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, applyAccelerationRecommendation,
     startServer, stopServer, startClient, stopClient, restartClient, startAll, stopAll,
-    fetchRuntimeDiagnostics, restartRuntime,
+    fetchRuntimeDiagnostics, restartRuntime, suppressConnectionErrors,
     fetchHistory, clearHistory, deleteHistoryEntry, addErrorMark, fetchErrorMarks,
     fetchStats, fetchLogs, fetchHotword, saveHotword,
     fetchFfmpegStatus, fetchLlmConfig, saveLlmConfig,

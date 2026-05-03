@@ -2,9 +2,9 @@
 
 ## Current Status
 
-- Status: Phase 1/2 implementation in progress; Web control console is now a compact desktop-window-style app with persisted config, operational APIs, a working first file-transcription workspace, VoiceType-specific ports, a verified CUDA route for the installed Qwen model, a compiled Tauri 1.0.0 desktop shell, event-based special-key hotkey listening, runtime diagnostics, and microphone selection.
+- Status: Phase 1/2 implementation in progress; Web control console is now the primary daily development/testing entry through Live UI, with persisted config, operational APIs, a working first file-transcription workspace, VoiceType-specific ports, a verified CUDA route for the installed Qwen model, a compiled Tauri 1.0.0 desktop shell for packaged releases, event-based special-key hotkey listening, runtime diagnostics, and hot-reloading microphone selection.
 - Active goal: stabilize VoiceType daily voice input, then expand the same frontend into Tauri with file transcription and subtitle export.
-- Current blocker: manual Caps Lock dictation still needs user-side confirmation after selecting a working microphone and restarting the client. The app now includes an advanced microphone monitor that can scan all Windows input devices and show RMS/Peak plus waveform bars; API self-test proved several local inputs have live signal, so remaining failures are likely selection/restart/runtime-state related rather than total microphone unavailability.
+- Current blocker: manual Caps Lock dictation still needs user-side confirmation after selecting a working microphone. The app now hot-reloads client config, avoids NetEase/remote/virtual inputs, remaps saved 3.5mm devices when Windows changes indexes, and filters unsupported input sample rates before opening WASAPI streams.
 - Governance note: every substantial task now requires an explicit validation gate and browser/runtime checks for UI work.
 
 ## Current Architecture
@@ -17,8 +17,9 @@
 - File transcription queue: `common/transcription.py` plus `/api/transcriptions*`, `/api/ffmpeg/status`, and `/api/llm/config`
 - Runtime ports: ASR `55341`, API `55342`, frontend `55343`
 - Desktop shell: `frontend/src-tauri/` uses Tauri v2, with a 480x720 window, single-instance handling, tray Show/Quit menu, close-to-tray behavior, and runtime startup through `scripts/start-runtime.ps1`
+- Live UI entry: `VoiceType-live-ui.bat` starts the project runtime plus Vite at `http://127.0.0.1:55343/#/` and opens the latest source UI in a browser. Use this for daily frontend validation; use the portable EXE only when validating a packaged release.
 - Daily recording archive: valid hotkey recordings now use `data/archive/YYYY/MM/DD/HHMMSS_<task_id>/recording.wav` plus `result.json`; short presses below `client.min_press_seconds` are ignored before ASR submission.
-- Microphone selection: Settings reads `/api/audio/input-devices`, defaults to a deduplicated recommended physical-input list, persists `client.input_device_index`, `client.input_device_name`, `client.input_device_host_api`, and `client.input_device_sample_rate`, prompts to restart the recording client after microphone changes, and can open a separate `麦克风高级检测` window.
+- Microphone selection: Settings reads `/api/audio/input-devices`, defaults to a deduplicated recommended physical-input list, persists `client.input_device_index`, `client.input_device_name`, `client.input_device_host_api`, and `client.input_device_sample_rate`, applies client-side changes on the next key press without restart, tests microphones with a non-reentrant 3-second record/playback flow, and can open a separate `麦克风高级检测` window.
 - Agent integration guide: `.agents/skills/voicetype-transcription/SKILL.md`
 - Historical handoff: `PROJECT_SUMMARY.md`
 
@@ -28,7 +29,7 @@
 - Hotkey normalization smoke: passed on 2026-05-01 for legacy and snake_case `caps_lock`, `left_shift`, `right_shift`, and aggregate `shift` matching.
 - Frontend typecheck and production build: passed on 2026-05-02 with `node node_modules\vue-tsc\index.js --noEmit` and `npm run build`.
 - API smoke: passed on 2026-05-01 for `/api/status`, `/api/health`, `/api/config`, and `/api/models`; `/api/models` includes download links and `/api/models/{id}/open-folder` opened the expected model root.
-- Browser smoke: Playwright browser automation was unavailable in the latest validation because the browser target was closed. A dev frontend was started at `55343` with API base `55442`; API/UI builds passed, but visual browser verification remains a manual follow-up.
+- Browser smoke: latest UI validation is blocked. Browser plugin requires Node `>=22.22.0` but the installed Node is `22.21.0`, and the fallback Playwright target was closed. Frontend typecheck/build passed, but visual browser verification remains a manual follow-up.
 - Client smoke: UI-started client stays running after startup and no longer crashes on the `websockets` `.closed` compatibility issue.
 - ASR startup race smoke: `start-runtime.ps1` now waits for ASR readiness before the client is started; 2026-05-02 restart showed `server.managed=true`, `client.managed=true`, and client shortcut `caps_lock`.
 - Recording feedback smoke: client-side beep/topmost desktop notification module runs without errors; Settings page exposes notification and sound toggles.
@@ -43,13 +44,18 @@
 - Advanced microphone scan smoke: `/api/audio/scan-levels` on temporary API port `55442` scanned 20 inputs in about 1.55s, detected 5 active sources, returned waveform arrays, and showed 3.5mm/array DirectSound inputs with live RMS around 5.7% during the test window.
 - Dashboard audio playback smoke: frontend build passed with recent-record play/stop and copy SVG actions. The audio file endpoint is restricted to history task recordings under VoiceType data/archive directories.
 - Desktop shell smoke: MSVC Build Tools are installed and available through `VsDevCmd.bat`; Tauri 1.0.0 build passed on 2026-05-02 using `CARGO_TARGET_DIR=frontend/src-tauri/target-codex-build7`. The latest compiled EXE was copied to `dist/releases/VoiceType-1.0.0/VoiceType-1.0.0-portable-build7.exe`.
+- Microphone hot-reload smoke: Python compile passed on 2026-05-03 for the shared audio device policy and client reload path; frontend typecheck/build passed; temporary API smoke on `55442` resolved the saved 3.5mm microphone from old index `1` to WASAPI index `20` while keeping NetEase virtual inputs out of recommended defaults.
+- WASAPI sample-rate smoke: PyAudio confirmed 3.5mm WASAPI device `20` supports `48000Hz` and rejects `44100Hz`; recorder smoke now skips unsupported rates, records at `48000Hz`, and no longer emits the `Failed to open input stream at 44100Hz` warning. Temporary API smoke on `55442` returned `ok=true`, `sample_rate=48000`, and a WAV preview for `/api/audio/test-input`. Frontend typecheck and production build passed after the startup/GPU/mic-test UI changes.
+- Live UI workflow: added on 2026-05-03. It still needs final runtime/browser smoke after the script change, but it is now the default way to verify frontend fixes without rebuilding the Tauri EXE.
 
 ## Next Minimal Action
 
-- Use `dist/releases/VoiceType-1.0.0/VoiceType-1.0.0-portable.exe` as the only manual desktop entry for current testing; do not open `target/**/deps/*.exe` or old `target-codex-build*` outputs.
-- For this build, launch `dist/releases/VoiceType-1.0.0/VoiceType-1.0.0-portable-build7.exe`.
-- In Settings, open `高级检测`, speak normally, identify the row whose waveform and RMS/Peak move, click `使用` on that exact device, then restart the client before trying Caps Lock dictation.
+- Use `VoiceType-live-ui.bat` for current testing so the browser loads the latest frontend source without rebuilding the EXE.
+- Do not use `VoiceType-1.0.0-portable-build7.exe` to validate fresh frontend changes; it contains bundled UI assets from the time it was packaged.
+- In the Live UI Settings page, confirm `界面来源` shows `live-ui`, then click `测试` for the selected 3.5mm microphone and confirm the 3-second record/playback flow returns audible audio. Then try Caps Lock dictation again. Restart the client only if the status stays stuck or the keyboard hook itself fails.
+- For copy-paste-safe manual startup from PowerShell:
+  `Set-Location -LiteralPath "C:\Users\13678\Documents\.Projects\voice-type"` then run `.\VoiceType-live-ui.bat`.
 
 ## Last Updated
 
-- 2026-05-02
+- 2026-05-03

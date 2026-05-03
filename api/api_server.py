@@ -22,6 +22,13 @@ from pydantic import BaseModel
 import uvicorn
 import websockets as ws_lib
 
+from common.audio_devices import (
+    best_input_device,
+    candidate_input_sample_rates,
+    device_matches_selection,
+    input_device_recommendation,
+    supported_input_sample_rates,
+)
 from common.audio_levels import measure_pcm16_level, pcm16_waveform
 from common.history import HistoryManager
 from common.hotword import HotwordManager
@@ -36,6 +43,7 @@ from config.settings import (
     APIConfig,
     APP_CONFIG_FILE,
     BASE_DIR,
+    ClientConfig,
     DEFAULT_API_PORT,
     DEFAULT_ASR_PORT,
     DEFAULT_FRONTEND_PORT,
@@ -826,39 +834,8 @@ async def put_config(req: ConfigUpdateRequest):
     return {"status": "saved", "config": app_config_to_dict(config)}
 
 
-def _audio_device_label(name: str) -> str:
-    return name.lower().replace("（", "(").replace("）", ")")
-
-
 def _audio_device_recommendation(name: str, host_api: str, is_default: bool, sample_rate: int) -> tuple[bool, str]:
-    lower_name = _audio_device_label(name)
-    lower_host = host_api.lower()
-    noise_terms = [
-        "声音映射器",
-        "sound mapper",
-        "主声音捕获",
-        "primary sound capture",
-        "虚拟",
-        "cable output",
-        "vb-audio",
-        "virtual",
-        "output",
-        "hands-free",
-        "hands free",
-    ]
-    real_mic_terms = ["麦克风", "microphone", "mic", "array", "3.5mm"]
-
-    if any(term in lower_name for term in noise_terms) and not is_default:
-        return False, "已隐藏：虚拟/映射/低质量输入"
-    if is_default:
-        return True, "系统默认输入"
-    if "wasapi" not in lower_host and "directsound" not in lower_host:
-        return False, "默认隐藏：低层驱动或重复设备"
-    if any(term in lower_name for term in real_mic_terms) and ("wasapi" in lower_host or "directsound" in lower_host):
-        return True, "推荐：真实麦克风输入"
-    if any(term in lower_name for term in real_mic_terms) and sample_rate >= 44100:
-        return True, "推荐：名称匹配麦克风"
-    return False, "默认隐藏：非推荐输入"
+    return input_device_recommendation(name, host_api, is_default, sample_rate)
 
 
 def _pyaudio_host_api(audio: Any, host_api_index: int) -> str:
@@ -866,6 +843,56 @@ def _pyaudio_host_api(audio: Any, host_api_index: int) -> str:
         return str(audio.get_host_api_info_by_index(host_api_index).get("name") or "")
     except Exception:
         return ""
+
+
+def _pyaudio_default_input_index(audio: Any) -> int:
+    try:
+        return int(audio.get_default_input_device_info().get("index", -1))
+    except Exception:
+        return -1
+
+
+def _pyaudio_input_devices(audio: Any, selected_config: ClientConfig | None = None) -> list[dict]:
+    devices = []
+    default_index = _pyaudio_default_input_index(audio)
+    for index in range(audio.get_device_count()):
+        info = audio.get_device_info_by_index(index)
+        max_channels = int(info.get("maxInputChannels", 0) or 0)
+        if max_channels <= 0:
+            continue
+        name = str(info.get("name", ""))
+        host_api_index = int(info.get("hostApi", -1) or -1)
+        host_api = _pyaudio_host_api(audio, host_api_index)
+        sample_rate = int(float(info.get("defaultSampleRate", 0) or 0))
+        is_default = index == default_index
+        recommended, reason = _audio_device_recommendation(name, host_api, is_default, sample_rate)
+        selected = False
+        if selected_config:
+            selected = device_matches_selection(
+                {
+                    "index": index,
+                    "name": name,
+                    "host_api": host_api,
+                    "default_sample_rate": sample_rate,
+                },
+                selected_config.input_device_index,
+                selected_config.input_device_name,
+                selected_config.input_device_host_api,
+            )
+        devices.append({
+            "index": index,
+            "name": name,
+            "host_api": host_api,
+            "host_api_index": host_api_index,
+            "channels": max_channels,
+            "default_sample_rate": sample_rate,
+            "is_default": is_default,
+            "selected": selected,
+            "recommended": recommended,
+            "reason": reason,
+            "level_supported": True,
+        })
+    return devices
 
 
 def _collect_audio_input_devices() -> dict:
@@ -885,49 +912,36 @@ def _collect_audio_input_devices() -> dict:
         }
 
     audio = pyaudio.PyAudio()
-    devices = []
-    default_index = -1
     try:
-        try:
-            default_info = audio.get_default_input_device_info()
-            default_index = int(default_info.get("index", -1))
-        except Exception:
-            default_index = -1
-
-        for index in range(audio.get_device_count()):
-            info = audio.get_device_info_by_index(index)
-            max_channels = int(info.get("maxInputChannels", 0) or 0)
-            if max_channels <= 0:
-                continue
-            name = str(info.get("name", ""))
-            host_api_index = int(info.get("hostApi", -1) or -1)
-            host_api = _pyaudio_host_api(audio, host_api_index)
-            sample_rate = int(float(info.get("defaultSampleRate", 0) or 0))
-            is_default = index == default_index
-            recommended, reason = _audio_device_recommendation(name, host_api, is_default, sample_rate)
-            devices.append({
-                "index": index,
-                "name": name,
-                "host_api": host_api,
-                "host_api_index": host_api_index,
-                "channels": max_channels,
-                "default_sample_rate": sample_rate,
-                "is_default": is_default,
-                "selected": index == config.input_device_index,
-                "recommended": recommended,
-                "reason": reason,
-                "level_supported": True,
-            })
+        default_index = _pyaudio_default_input_index(audio)
+        devices = _pyaudio_input_devices(audio, config)
     finally:
         audio.terminate()
 
-    selected_exists = config.input_device_index < 0 or any(device["index"] == config.input_device_index for device in devices)
+    selected_device = next((device for device in devices if device.get("selected")), None)
+    selected_resolved_index = (
+        best_input_device(
+            devices,
+            default_index=default_index,
+            preferred_name=config.input_device_name,
+            preferred_host_api=config.input_device_host_api,
+            preferred_sample_rate=config.input_device_sample_rate,
+        )
+        if config.input_device_name
+        else int(selected_device["index"]) if selected_device else None
+    )
+    selected_exists = config.input_device_index < 0 or bool(selected_device) or selected_resolved_index is not None
+    smart_default_index = best_input_device(devices, default_index=default_index)
+    smart_default = next((device for device in devices if device["index"] == smart_default_index), None)
     recommended_count = len([device for device in devices if device["recommended"] or device["selected"]])
     return {
         "available": True,
         "devices": devices,
         "default_index": default_index,
+        "smart_default_index": smart_default_index if smart_default_index is not None else -1,
+        "smart_default_name": smart_default.get("name", "") if smart_default else "",
         "selected_index": config.input_device_index,
+        "selected_resolved_index": selected_resolved_index if selected_resolved_index is not None else -1,
         "selected_name": config.input_device_name,
         "selected_exists": selected_exists,
         "recommended_count": recommended_count,
@@ -950,6 +964,10 @@ def _record_audio_test(device_index: int, seconds: float) -> dict:
     stream = None
     seconds = max(0.5, min(float(seconds or 3.0), 5.0))
     try:
+        if device_index < 0:
+            devices = _pyaudio_input_devices(audio)
+            best_index = best_input_device(devices, default_index=_pyaudio_default_input_index(audio))
+            device_index = best_index if best_index is not None else -1
         info = (
             audio.get_device_info_by_index(device_index)
             if device_index >= 0
@@ -957,8 +975,15 @@ def _record_audio_test(device_index: int, seconds: float) -> dict:
         )
         index = int(info.get("index", -1))
         host_api = _pyaudio_host_api(audio, int(info.get("hostApi", -1) or -1))
-        sample_rate = int(float(info.get("defaultSampleRate", 0) or 0)) or 48000
         channels = 1
+        default_rate = int(float(info.get("defaultSampleRate", 0) or 0)) or 48000
+        candidates = candidate_input_sample_rates(
+            default_sample_rate=default_rate,
+            preferred_sample_rate=default_rate,
+            configured_sample_rate=48000,
+        )
+        supported_rates = supported_input_sample_rates(audio, pyaudio, index, channels, candidates)
+        sample_rate = supported_rates[0] if supported_rates else candidates[0]
         chunk = 960
         open_kwargs = {
             "format": pyaudio.paInt16,

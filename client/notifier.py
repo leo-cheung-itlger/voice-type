@@ -16,6 +16,10 @@ class RecordingNotifier:
         self._thread: Optional[threading.Thread] = None
         self._ready = False
 
+    def configure(self, enabled: bool = True, sound_enabled: bool = True):
+        self._enabled = bool(enabled)
+        self._sound_enabled = bool(sound_enabled)
+
     def recording_started(self):
         self._beep(start=True)
         self._send("start")

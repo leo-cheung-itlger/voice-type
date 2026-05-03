@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## 2026-05-03
+
+- Added `VoiceType-live-ui.bat` and `scripts/start-live-ui.ps1` as the default no-rebuild development entry. The script starts the runtime plus Vite, opens `http://127.0.0.1:55343/#/`, and avoids using stale bundled EXE assets to validate frontend fixes.
+- Added a frontend source marker in the app header and Settings page so `live-ui` and `bundled-exe` are visibly different during troubleshooting.
+- Changed microphone switching to hot-reload in the running recording client. Client config is now re-read while the process is alive, so shortcut, output mode, notification toggles, and microphone changes apply on the next key press instead of requiring a client restart.
+- Added a shared smart input-device policy that hides NetEase/remote/virtual/mapping inputs from recommended defaults, prefers real 3.5mm/WASAPI or DirectSound microphones, and resolves saved devices by name when Windows changes PyAudio indexes after reboot.
+- Fixed WASAPI 3.5mm sample-rate selection: the recorder and `/api/audio/test-input` now filter unsupported rates before opening a stream, so device `20` goes straight to `48000Hz` instead of first warning on stale `44100Hz`.
+- Reduced startup UI noise by suppressing transient API connection errors during the startup grace window, and changed GPU status so it shows `检测中` until hardware/CUDA facts are loaded instead of briefly showing contradictory CPU fallback text.
+- Updated Settings microphone testing to a non-reentrant recording/playback flow with a 3-second circular progress indicator for capture and playback.
+- Validation: Python compile passed; frontend typecheck and production build passed; PyAudio policy smoke confirmed device `20` supports `48000Hz` only; recorder smoke remapped old index `1` to WASAPI index `20`, skipped unsupported rates, and recorded at `48000Hz`; temporary API smoke on port `55442` returned `ok=true`, `sample_rate=48000`, and a WAV preview for `/api/audio/test-input`. Browser UI smoke remains blocked because Browser's Node runtime requires `>=22.22.0` while this machine has `22.21.0`, and the fallback Playwright target was closed.
+
 ## 2026-05-02
 
 - Added microphone advanced diagnostics: `/api/audio/scan-levels` samples every input device, returns RMS/Peak plus a compact waveform, and reports the strongest active source.

@@ -12,7 +12,7 @@
         <label class="row setting-row">
           <span>
             <span class="value">输出模式</span>
-            <span class="label">客户端重启后完全生效</span>
+            <span class="label">保存后下次识别生效</span>
           </span>
           <select v-model="store.config.client.output_mode" class="field compact">
             <option value="clipboard">剪贴板</option>
@@ -23,7 +23,7 @@
         <label class="row setting-row">
           <span>
             <span class="value">快捷键</span>
-            <span class="label">{{ captureMode ? '请按下要绑定的实体键' : '客户端重启后生效' }}</span>
+            <span class="label">{{ captureMode ? '请按下要绑定的实体键' : '保存后自动生效' }}</span>
           </span>
           <div class="inline-controls">
             <button class="btn btn-small" :class="captureMode ? 'btn-primary' : 'btn-ghost'" @click="toggleCapture">
@@ -47,7 +47,7 @@
           <div class="mic-stack">
             <div class="inline-controls mic-controls">
               <select v-model.number="selectedInputDevice" class="field mic-field" @change="onMicrophoneChange">
-                <option :value="-1">系统默认麦克风</option>
+                <option :value="-1">智能默认麦克风</option>
                 <option
                   v-for="device in visibleAudioDevices"
                   :key="device.index"
@@ -57,10 +57,18 @@
                 </option>
               </select>
               <button class="btn btn-small btn-ghost" :disabled="store.audioInputTesting" @click.prevent="testMicrophone">
-                {{ store.audioInputTesting ? '测试中' : '测试' }}
+                {{ microphoneTestButtonLabel }}
               </button>
               <button class="btn btn-small btn-ghost" @click.prevent="openMicrophoneMonitor">高级检测</button>
               <button class="btn btn-small btn-ghost" @click.prevent="store.fetchAudioInputDevices()">刷新</button>
+            </div>
+            <div v-if="store.audioInputTesting" class="mic-progress">
+              <div
+                class="mic-progress-ring"
+                :style="{ '--progress': `${Math.round(store.audioInputTestProgress * 360)}deg` }"
+                aria-hidden="true"
+              ></div>
+              <span>{{ microphoneTestProgressLabel }}</span>
             </div>
             <div v-if="store.audioInputTest" class="mic-test" :class="{ ok: store.audioInputTest.has_signal }">
               {{ audioTestLabel }}
@@ -70,7 +78,7 @@
         <label v-if="!store.audioInputDevices?.selected_exists" class="row setting-row warning-row">
           <span>
             <span class="value">麦克风不可用</span>
-            <span class="label">当前选择的设备已消失，客户端会回退系统默认输入。</span>
+            <span class="label">当前选择的设备已消失，客户端会回退到真实麦克风优先的智能默认。</span>
           </span>
           <button class="btn btn-small btn-ghost" @click.prevent="resetMicrophone">使用默认</button>
         </label>
@@ -121,8 +129,13 @@
           </select>
         </label>
         <div class="restart-row">
-          <span class="label">快捷键、输出模式、录音参数等修改后，重启客户端才会完全生效。</span>
+          <span class="label">快捷键、输出模式、麦克风会自动热加载；状态异常时可手动重启客户端。</span>
           <button class="btn btn-small btn-ghost" @click="restartClient">重启客户端</button>
+        </div>
+        <div class="runtime-source-row">
+          <span class="label">界面来源</span>
+          <span class="source-badge" :class="{ live: store.frontendSource === 'live-ui' }">{{ store.frontendSource }}</span>
+          <span class="label">{{ store.frontendSource === 'live-ui' ? '正在使用源码热更新界面' : '正在使用 EXE 内嵌界面' }}</span>
         </div>
       </div>
     </section>
@@ -237,16 +250,6 @@
       </div>
     </section>
 
-    <div v-if="restartPrompt" class="modal-backdrop">
-      <div class="modal">
-        <div class="value">{{ restartPromptTitle }}</div>
-        <p class="label">是否立即自动重启录音客户端以使其生效？</p>
-        <div class="modal-actions">
-          <button class="btn btn-primary" @click="confirmRestartNow">立即重启</button>
-          <button class="btn btn-ghost" @click="dismissRestartPrompt">稍后手动重启</button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -260,8 +263,6 @@ const router = useRouter()
 const benchmarking = ref(false)
 const captureMode = ref(false)
 const saveState = ref('自动保存')
-const restartPrompt = ref(false)
-const restartPromptTitle = ref('设置已更改')
 const activeClientShortcut = ref('')
 const activeClientDevice = ref('')
 const selectedInputDevice = ref(-1)
@@ -294,8 +295,10 @@ const microphoneHint = computed(() => {
   const devices = store.audioInputDevices
   if (!devices) return '等待检测输入设备'
   if (!devices.available) return devices.error || 'PyAudio 不可用'
-  if (!devices.selected_exists) return '所选麦克风已不存在，将回退系统默认'
-  return microphoneChanged.value ? '麦克风已更改，需重启客户端后生效' : '客户端重启后生效'
+  if (!devices.selected_exists) return '所选麦克风已不存在，将回退智能默认'
+  if (microphoneChanged.value) return '保存后下次按键生效'
+  const smartDefault = devices.smart_default_name ? `智能默认：${devices.smart_default_name}` : '保存后自动生效'
+  return Number(store.config.client.input_device_index ?? -1) < 0 ? smartDefault : '保存后自动生效'
 })
 
 const visibleAudioDevices = computed(() => {
@@ -321,6 +324,19 @@ const audioTestLabel = computed(() => {
   return `${device}${result.message} · RMS ${(rms * 100).toFixed(2)}% · Peak ${(peak * 100).toFixed(2)}%`
 })
 
+const microphoneTestButtonLabel = computed(() => {
+  if (store.audioInputTestPhase === 'recording') return '录音中'
+  if (store.audioInputTestPhase === 'playing') return '播放中'
+  return '测试'
+})
+
+const microphoneTestProgressLabel = computed(() => {
+  const seconds = Math.max(0, Math.ceil((1 - Number(store.audioInputTestProgress || 0)) * 3))
+  if (store.audioInputTestPhase === 'recording') return `录音 ${seconds}s`
+  if (store.audioInputTestPhase === 'playing') return `播放 ${seconds}s`
+  return '准备中'
+})
+
 const microphoneChanged = computed(() => deviceSignature() !== activeClientDevice.value)
 
 async function save(promptRestart = false) {
@@ -328,9 +344,10 @@ async function save(promptRestart = false) {
   await store.saveConfig()
   await Promise.all([store.fetchStatus(), store.fetchModels()])
   saveState.value = store.lastError ? '保存失败' : '已保存'
-  if (promptRestart && !store.lastError && activeClientShortcut.value && normalizeShortcut(store.config.client.shortcut_key) !== activeClientShortcut.value) {
-    restartPromptTitle.value = '快捷键设置已更改'
-    restartPrompt.value = true
+  if (!store.lastError) {
+    activeClientShortcut.value = normalizeShortcut(store.config.client.shortcut_key)
+    activeClientDevice.value = deviceSignature()
+    if (promptRestart) store.showToast('已保存，下次按键自动生效')
   }
 }
 
@@ -390,10 +407,6 @@ function onMicrophoneChange() {
   store.config.client.input_device_name = device?.name || ''
   store.config.client.input_device_host_api = device?.host_api || ''
   store.config.client.input_device_sample_rate = Number(device?.default_sample_rate || 0)
-  if (deviceSignature() !== activeClientDevice.value) {
-    restartPromptTitle.value = '麦克风设置已更改'
-    restartPrompt.value = true
-  }
 }
 
 function resetMicrophone() {
@@ -402,8 +415,6 @@ function resetMicrophone() {
   store.config.client.input_device_name = ''
   store.config.client.input_device_host_api = ''
   store.config.client.input_device_sample_rate = 0
-  restartPromptTitle.value = '麦克风设置已更改'
-  restartPrompt.value = true
 }
 
 function deviceLabel(device: AudioInputDevice) {
@@ -419,12 +430,14 @@ function normalizedDeviceName(name: string) {
 }
 
 function deviceRank(device: AudioInputDevice) {
-  const selectedBonus = device.selected ? -200000 : 0
-  const defaultBonus = device.is_default ? -100000 : 0
-  const sample = Number(device.default_sample_rate || 999999)
+  const resolvedIndex = Number(store.audioInputDevices?.selected_resolved_index ?? -1)
+  const resolvedBonus = device.index === resolvedIndex ? -500000 : 0
+  const selectedBonus = device.selected ? -100000 : 0
+  const defaultPenalty = device.is_default ? 20000 : 0
+  const samplePenalty = Math.abs(Number(device.default_sample_rate || 48000) - 48000)
   const host = (device.host_api || '').toLowerCase()
-  const hostPenalty = host.includes('wasapi') || host.includes('directsound') ? 0 : 10000
-  return selectedBonus + defaultBonus + hostPenalty + sample
+  const hostPenalty = host.includes('wasapi') ? 0 : host.includes('directsound') ? 1000 : 10000
+  return resolvedBonus + selectedBonus + defaultPenalty + hostPenalty + samplePenalty
 }
 
 function deviceSignature() {
@@ -434,6 +447,12 @@ function deviceSignature() {
     store.config.client.input_device_host_api || '',
     Number(store.config.client.input_device_sample_rate || 0),
   ].join('|')
+}
+
+function selectedDeviceIndexForUi() {
+  const resolved = Number(store.audioInputDevices?.selected_resolved_index ?? -1)
+  if (resolved >= 0 && Number(store.config.client.input_device_index ?? -1) >= 0) return resolved
+  return Number(store.config.client.input_device_index ?? -1)
 }
 
 async function testMicrophone() {
@@ -462,19 +481,6 @@ async function restartClient() {
   await store.restartClient()
   activeClientShortcut.value = normalizeShortcut(store.config.client.shortcut_key)
   activeClientDevice.value = deviceSignature()
-  restartPrompt.value = false
-}
-
-async function confirmRestartNow() {
-  await save(false)
-  await store.restartClient()
-  activeClientShortcut.value = normalizeShortcut(store.config.client.shortcut_key)
-  activeClientDevice.value = deviceSignature()
-  restartPrompt.value = false
-}
-
-function dismissRestartPrompt() {
-  restartPrompt.value = false
 }
 
 function modelSummary(model: ModelEntry) {
@@ -546,12 +552,14 @@ async function applyRecommendation() {
 
 onMounted(async () => {
   await store.fetchConfig()
-  selectedInputDevice.value = Number(store.config.client.input_device_index ?? -1)
+  selectedInputDevice.value = selectedDeviceIndexForUi()
   activeClientShortcut.value = normalizeShortcut(store.config.client.shortcut_key)
   activeClientDevice.value = deviceSignature()
   store.fetchModels()
   store.fetchHardware()
-  store.fetchAudioInputDevices()
+  store.fetchAudioInputDevices().then(() => {
+    selectedInputDevice.value = selectedDeviceIndexForUi()
+  })
   store.fetchBenchmarks()
   store.fetchLogs()
   window.addEventListener('keydown', onCaptureKeydown, true)
@@ -572,8 +580,15 @@ watch(
 
 watch(
   () => store.config.client.input_device_index,
-  (value) => {
-    selectedInputDevice.value = Number(value ?? -1)
+  () => {
+    selectedInputDevice.value = selectedDeviceIndexForUi()
+  },
+)
+
+watch(
+  () => store.audioInputDevices?.selected_resolved_index,
+  () => {
+    selectedInputDevice.value = selectedDeviceIndexForUi()
   },
 )
 </script>
@@ -639,6 +654,30 @@ watch(
   overflow-wrap: anywhere;
 }
 
+.mic-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mic-progress-ring {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: conic-gradient(var(--accent) var(--progress), var(--panel-2) 0deg);
+  position: relative;
+}
+
+.mic-progress-ring::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: inherit;
+  background: var(--panel);
+}
+
 .mic-test.ok {
   border-color: rgba(125, 220, 155, 0.3);
   color: var(--accent);
@@ -681,6 +720,29 @@ input[type="checkbox"] {
   justify-content: space-between;
   padding-top: 10px;
   border-top: 1px solid var(--line);
+}
+
+.runtime-source-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 13px;
+  border-top: 1px solid var(--line);
+}
+
+.source-badge {
+  padding: 4px 8px;
+  border: 1px solid rgba(240, 195, 106, 0.32);
+  border-radius: 999px;
+  color: var(--warn);
+  background: rgba(240, 195, 106, 0.08);
+  font-size: 11px;
+}
+
+.source-badge.live {
+  border-color: rgba(125, 220, 155, 0.4);
+  color: var(--accent);
+  background: rgba(125, 220, 155, 0.09);
 }
 
 .model-row {

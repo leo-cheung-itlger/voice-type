@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import asdict
 import json
 import os
 import sys
@@ -11,8 +12,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import websockets
 
 from common.hotword import HotwordManager
+from common.audio_levels import quality_message
 from common.logger import setup_logger
-from config.settings import ClientConfig, load_app_config
+from config.settings import APP_CONFIG_FILE, ClientConfig, load_app_config
 from client.notifier import RecordingNotifier
 from client.output import type_result
 from client.recorder import AudioRecorder
@@ -111,6 +113,8 @@ class VoiceClient:
         self._keyboard_hook = None
         self._send_queue: "asyncio.Queue[dict]" = asyncio.Queue()
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._config_reload_task: Optional[asyncio.Task] = None
+        self._config_mtime = self._current_config_mtime()
 
     async def start(self):
         logger.info("Starting VoiceClient...")
@@ -124,8 +128,72 @@ class VoiceClient:
 
         keyboard_task = asyncio.create_task(self._keyboard_loop())
         worker_task = asyncio.create_task(self._request_worker())
+        self._config_reload_task = asyncio.create_task(self._config_reload_loop())
 
-        await asyncio.gather(keyboard_task, worker_task)
+        await asyncio.gather(keyboard_task, worker_task, self._config_reload_task)
+
+    def _current_config_mtime(self) -> float:
+        try:
+            return os.path.getmtime(APP_CONFIG_FILE)
+        except OSError:
+            return 0.0
+
+    async def _config_reload_loop(self):
+        while self._running:
+            self._reload_config_if_needed()
+            await asyncio.sleep(1.0)
+
+    def _reload_config_if_needed(self, force: bool = False):
+        mtime = self._current_config_mtime()
+        if not force and mtime == self._config_mtime:
+            return
+        self._config_mtime = mtime
+        new_config = load_app_config().client
+        self._apply_config(new_config)
+
+    def _apply_config(self, config: ClientConfig):
+        old = asdict(self._config)
+        new = asdict(config)
+        if old == new:
+            return
+
+        old_shortcut = normalize_shortcut_key(self._config.shortcut_key)
+        new_shortcut = normalize_shortcut_key(config.shortcut_key)
+        old_device = (
+            self._config.input_device_index,
+            self._config.input_device_name,
+            self._config.input_device_host_api,
+            self._config.input_device_sample_rate,
+        )
+        new_device = (
+            config.input_device_index,
+            config.input_device_name,
+            config.input_device_host_api,
+            config.input_device_sample_rate,
+        )
+
+        self._config = config
+        self._recorder.configure(
+            sample_rate=config.sample_rate,
+            channels=config.channels,
+            input_device_index=config.input_device_index,
+            input_device_name=config.input_device_name,
+            input_device_host_api=config.input_device_host_api,
+            input_device_sample_rate=config.input_device_sample_rate,
+        )
+        self._notifier.configure(
+            enabled=config.notification_enabled,
+            sound_enabled=config.notification_sound,
+        )
+
+        changed = []
+        if old_shortcut != new_shortcut:
+            changed.append(f"shortcut={new_shortcut}")
+        if old_device != new_device:
+            changed.append(f"input_device={new_device[0]}:{new_device[1] or 'smart-default'}")
+        if old.get("output_mode") != new.get("output_mode"):
+            changed.append(f"output={config.output_mode}")
+        logger.info("Client config hot-reloaded%s", f" ({', '.join(changed)})" if changed else "")
 
     async def _connect(self) -> bool:
         attempt = 0
@@ -243,11 +311,10 @@ class VoiceClient:
         import keyboard as kb
 
         loop = asyncio.get_running_loop()
-        shortcut = normalize_shortcut_key(self._config.shortcut_key)
         logger.info(
             "Listening for shortcut key via global hook: raw=%s normalized=%s",
             self._config.shortcut_key,
-            shortcut,
+            normalize_shortcut_key(self._config.shortcut_key),
         )
 
         def schedule(callback):
@@ -256,6 +323,7 @@ class VoiceClient:
             loop.call_soon_threadsafe(lambda: asyncio.create_task(callback()))
 
         def on_keyboard_event(event):
+            shortcut = normalize_shortcut_key(self._config.shortcut_key)
             event_key = normalize_keyboard_event_key(
                 getattr(event, "name", "") or "",
                 getattr(event, "scan_code", None),
@@ -295,6 +363,7 @@ class VoiceClient:
         if self._recording:
             return
 
+        self._reload_config_if_needed(force=True)
         self._recording = True
         self._key_down_at = time.monotonic()
         logger.info("Key pressed, starting recording")
@@ -321,7 +390,7 @@ class VoiceClient:
         self._recording = False
         logger.info("Key released, stopping recording")
 
-        audio_data = self._recorder.stop()
+        capture = self._recorder.stop()
         held_seconds = max(time.monotonic() - self._key_down_at, 0.0)
         min_press_seconds = max(float(self._config.min_press_seconds or 0), 0.0)
         if held_seconds < min_press_seconds:
@@ -335,21 +404,29 @@ class VoiceClient:
 
         self._notifier.recording_finished()
 
+        audio_data = capture.get("normalized_audio", b"")
         if not audio_data:
             self._notifier.output_failed("没有录到音频")
             return
 
-        audio_level = self._recorder.audio_level(audio_data)
+        audio_level = capture.get("audio_level", self._recorder.audio_level(capture))
+        quality_state = str(audio_level.get("quality_state") or "")
         logger.info(
-            "Recording level: rms=%s peak=%s signal=%s sample_rate=%s",
+            "Recording level: rms=%s peak=%s signal=%s quality=%s sample_rate=%s host_api=%s capture_channels=%s normalized_channels=%s",
             audio_level.get("rms_ratio"),
             audio_level.get("peak_ratio"),
             audio_level.get("has_signal"),
-            self._recorder.sample_rate,
+            quality_state,
+            capture.get("sample_rate", self._recorder.sample_rate),
+            capture.get("host_api", self._recorder.host_api),
+            capture.get("capture_channels", self._recorder.capture_channels),
+            capture.get("normalized_channels", self._recorder.normalized_channels),
         )
         if not audio_level.get("has_signal"):
-            self._notifier.output_failed("未检测到有效麦克风输入")
+            self._notifier.output_failed(quality_message(audio_level))
             return
+        if quality_state and quality_state != "ok":
+            logger.warning("Recording quality issue detected: %s", quality_message(audio_level))
 
         task_id = str(uuid.uuid4())
         archive_dir = self._archive_dir(task_id)
@@ -358,7 +435,7 @@ class VoiceClient:
 
         if self._config.save_audio:
             audio_path = os.path.join(archive_dir, "recording.wav")
-            self._recorder.save_wav(audio_path, audio_data)
+            self._recorder.save_wav(audio_path, capture)
 
         queued_count = self._send_queue.qsize() + (1 if self._processing else 0)
         if queued_count:
@@ -369,8 +446,12 @@ class VoiceClient:
             "audio_data": audio_data,
             "audio_path": audio_path,
             "transcript_path": transcript_path,
-            "sample_rate": self._recorder.sample_rate,
+            "sample_rate": capture.get("sample_rate", self._recorder.sample_rate),
             "audio_level": audio_level,
+            "capture_host_api": capture.get("host_api", self._recorder.host_api),
+            "capture_channels": capture.get("capture_channels", self._recorder.capture_channels),
+            "normalized_channels": capture.get("normalized_channels", self._recorder.normalized_channels),
+            "device_name": capture.get("device_name", ""),
         })
 
     def _archive_dir(self, task_id: str) -> str:
@@ -444,6 +525,10 @@ class VoiceClient:
                 "output_mode": self._config.output_mode,
                 "sample_rate": item.get("sample_rate", self._config.sample_rate),
                 "audio_level": item.get("audio_level", {}),
+                "capture_host_api": item.get("capture_host_api", ""),
+                "capture_channels": item.get("capture_channels", 1),
+                "normalized_channels": item.get("normalized_channels", 1),
+                "device_name": item.get("device_name", ""),
                 "time_start": result.get("time_start"),
                 "time_submit": result.get("time_submit"),
                 "time_complete": result.get("time_complete"),
@@ -505,6 +590,8 @@ class VoiceClient:
             await self._ws.close()
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
+        if self._config_reload_task:
+            self._config_reload_task.cancel()
         self._pressed_shortcut = False
         self._notifier.shutdown()
         logger.info("VoiceClient stopped")

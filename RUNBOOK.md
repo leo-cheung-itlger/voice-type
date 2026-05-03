@@ -33,6 +33,14 @@ start.bat
 
 This first cleans project-owned duplicate processes, then launches API, frontend dev server, ASR server, and the recording client in hidden background processes. Frontend dev output is written to `logs/frontend_dev.log`; API stdout/stderr are written to `logs/api_stdout.log` and `logs/api_stderr.log`; managed ASR/client logs are written under `logs/managed_*`.
 
+Start the latest source UI without rebuilding the EXE:
+
+```bat
+VoiceType-live-ui.bat
+```
+
+This is the default daily development/testing entry. It starts the Python runtime, starts Vite on `http://127.0.0.1:55343`, opens the browser, and shows `live-ui` in the app header/settings. Use this to validate frontend changes. The portable EXE contains bundled UI assets and should only be used when validating a packaged release.
+
 Stop desktop services:
 
 ```bat
@@ -52,7 +60,7 @@ cd frontend
 npm run dev
 ```
 
-Start the current Web control console:
+Start the current Web control console manually:
 
 ```bat
 start.bat
@@ -70,13 +78,13 @@ npm run desktop:dev
 
 The Tauri development shell opens a 480x720 desktop window, starts the Python runtime through `scripts\start-runtime.ps1`, hides to tray when the window close button is clicked, and fully exits through the tray Quit menu.
 
-Current recommended user entry:
+Current packaged-release entry:
 
 ```text
 dist\releases\VoiceType-1.0.0\VoiceType-1.0.0-portable.exe
 ```
 
-Do not open EXE files from `target\release\deps`, `target\release\build`, or `target-codex-build*\deps`; those are internal build artifacts. Repeat-launching the portable EXE should focus the existing window rather than start another runtime.
+Do not use this packaged EXE to verify fresh frontend source changes unless it has just been rebuilt. Do not open EXE files from `target\release\deps`, `target\release\build`, or `target-codex-build*\deps`; those are internal build artifacts. Repeat-launching the portable EXE should focus the existing window rather than start another runtime.
 
 Windows Tauri builds require the Microsoft MSVC linker. If `npm run desktop:build` fails with `link.exe not found`, install Visual Studio 2022 Build Tools with the C++ desktop workload, then open a new terminal and rerun the build. Check the linker with:
 
@@ -208,8 +216,8 @@ GPU policy:
 For frontend/control-console changes:
 
 1. Run Python compile and frontend build.
-2. Start API and frontend.
-3. Open `http://127.0.0.1:55343/#/` in a browser.
+2. Start Live UI with `VoiceType-live-ui.bat`.
+3. Open `http://127.0.0.1:55343/#/` in a browser and confirm the header or Settings page shows `live-ui`.
 4. Check console errors and visible UI layout.
 5. Visit Control, History, Hotwords, Stats, and Settings tabs.
 6. Verify API-driven fields load instead of silently showing defaults.
@@ -258,11 +266,12 @@ Microphone selection checks:
 
 1. `GET /api/audio/input-devices` should return `available=true`, a `devices` list, and `recommended_count`.
 2. Settings should show a short recommended list by default. `3.5mm麦克风` and `麦克风阵列` should be visible if Windows exposes them through DirectSound/WASAPI. Use `显示全部设备` only for troubleshooting duplicates.
-3. Selecting a device persists `client.input_device_index`, `client.input_device_name`, `client.input_device_host_api`, and `client.input_device_sample_rate`.
-4. Click `测试`, speak for about 3 seconds, and confirm the result says `有声音` with non-trivial RMS/Peak values. The test should auto-play the captured sample so you can verify the selected microphone is actually the intended source.
-5. Restart the client and confirm `logs\recorder_*.log` reports the chosen device index/name and actual sample rate.
-6. If the selected device is missing, recording should fall back to the system default and Settings should show a warning.
-7. If a real-time recording has near-zero RMS/Peak, the client should show `未检测到有效麦克风输入` and skip ASR submission.
+3. Selecting a device persists `client.input_device_index`, `client.input_device_name`, `client.input_device_host_api`, and `client.input_device_sample_rate`. The running client hot-reloads these values and applies them on the next key press; restart the client only as a recovery action.
+4. Click `测试`, speak for about 3 seconds, and confirm the UI shows one recording progress circle followed by one playback progress circle. The button must stay disabled until playback finishes, and the captured sample should auto-play once.
+5. Confirm the test result says `有声音` with non-trivial RMS/Peak values. For WASAPI 3.5mm device `20`, `/api/audio/test-input` should return `sample_rate=48000` and a WAV preview.
+6. Press the shortcut after saving and confirm `logs\recorder_*.log` reports the chosen device index/name and actual sample rate without requiring a restart. For device `20`, logs should show `rate=48000` and should not show `Failed to open input stream at 44100Hz`.
+7. If Windows changes device indexes after reboot, the client should remap the saved device by name/host API. If the saved device is missing, recording should fall back to the smart default, preferring real 3.5mm/WASAPI or DirectSound microphones and avoiding NetEase/remote/virtual/mapping inputs.
+8. If a real-time recording has near-zero RMS/Peak, the client should show `未检测到有效麦克风输入` and skip ASR submission.
 
 Mic test API:
 
@@ -270,7 +279,7 @@ Mic test API:
 curl -X POST http://127.0.0.1:55342/api/audio/test-input -H "Content-Type: application/json" -d "{\"device_index\":20,\"seconds\":3}"
 ```
 
-The API records only an in-memory sample, returns RMS/Peak plus a base64 WAV preview for UI playback, and does not save a recording file.
+The API records only an in-memory sample, filters unsupported sample rates before opening the stream, returns RMS/Peak plus a base64 WAV preview for UI playback, and does not save a recording file.
 
 Advanced microphone monitor:
 
@@ -278,7 +287,7 @@ Advanced microphone monitor:
 curl -X POST http://127.0.0.1:55342/api/audio/scan-levels -H "Content-Type: application/json" -d "{\"seconds\":0.2,\"include_all\":true,\"waveform_points\":64}"
 ```
 
-Settings has a `高级检测` button. In the desktop shell it opens a separate microphone monitor window; in browser/dev mode it falls back to the `/microphones` route. The monitor samples every input device, shows RMS/Peak and a compact waveform, and can save the chosen device to config. After choosing a device, restart the recording client before testing Caps Lock dictation.
+Settings has a `高级检测` button. In the desktop shell it opens a separate microphone monitor window; in browser/dev mode it falls back to the `/microphones` route. The monitor samples every input device, shows RMS/Peak and a compact waveform, and can save the chosen device to config. After choosing a device, test Caps Lock dictation again; the running client should pick up the change on the next key press.
 
 History and layout checks:
 
