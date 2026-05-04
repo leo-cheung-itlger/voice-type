@@ -28,6 +28,7 @@ data/recordings/
 data/archive/
 data/transcription_uploads/
 data/transcription_validation/
+*.weba
 data/*.json
 data/*.jsonl
 data/*.db

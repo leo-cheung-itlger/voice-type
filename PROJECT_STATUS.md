@@ -4,7 +4,7 @@
 
 - Status: Phase 1/2 implementation in progress; Web control console is now the primary daily development/testing entry through Live UI, with persisted config, operational APIs, a working first file-transcription workspace, VoiceType-specific ports, a verified CUDA route for the installed Qwen model, a compiled Tauri 1.0.0 desktop shell for packaged releases, event-based special-key hotkey listening, runtime diagnostics, and hot-reloading microphone selection.
 - Active goal: stabilize VoiceType daily voice input, then expand the same frontend into Tauri with file transcription and subtitle export.
-- Current blocker: manual Caps Lock playback quality needs one more user-side confirmation after restarting the client. The latest follow-up removed the extra 20ms delay in the real-time drain loop that made saved Caps Lock WAVs shorter than the actual key-hold duration and sound fast/electronic in history playback.
+- Current blocker: none for the microphone/capture fix. User-side Live UI testing confirmed Caps Lock dictation output and recent playback are now usable after the real-time drain-loop fix.
 - Governance note: every substantial task now requires an explicit validation gate and browser/runtime checks for UI work.
 
 ## Current Architecture
@@ -52,9 +52,9 @@
 
 ## Next Minimal Action
 
-- Use `VoiceType-live-ui.bat` for current testing so the browser loads the latest frontend source without rebuilding the EXE. The header should show a visible `v1.0.0+...` build marker next to `VoiceType`.
+- Use `VoiceType-live-ui.bat` as the daily entry so the browser loads the latest frontend source without rebuilding the EXE. The header should show a visible `v1.0.0+...` build marker next to `VoiceType`.
+- For the next new-window task, start from `PROJECT_STATUS.md`, then read `RUNBOOK.md` only if commands or validation details are needed.
 - Do not use `VoiceType-1.0.0-portable-build7.exe` to validate fresh frontend changes; it contains bundled UI assets from the time it was packaged.
-- In the Live UI Settings page, confirm `界面来源` shows `live-ui`, then click `测试` for the selected 3.5mm microphone while the reference playback or your own speech is active. Confirm the result shows `Windows WASAPI · 48000Hz · 2ch`, a non-empty `识别：...` line, and no noise-only WAV. Then hold Caps Lock for about 3 seconds; the newest `result.json` should show `recorded_duration_seconds` close to `held_seconds` and `capture_realtime_ratio >= 0.85`.
 - For copy-paste-safe manual startup from PowerShell:
   `Set-Location -LiteralPath "C:\Users\13678\Documents\.Projects\voice-type"` then run `.\VoiceType-live-ui.bat`.
 
