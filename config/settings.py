@@ -83,6 +83,7 @@ class ClientConfig:
     input_device_name: str = ""
     input_device_host_api: str = ""
     input_device_sample_rate: int = 0
+    auto_gain_enabled: bool = True
     output_mode: Literal["clipboard", "keyboard", "hybrid"] = "clipboard"
     restore_clipboard: bool = True
     paste_delay: float = 0.05

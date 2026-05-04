@@ -226,6 +226,7 @@ class ProcessManager:
             f"--input-device-sample-rate={config.input_device_sample_rate}",
             f"--min-press-seconds={config.min_press_seconds}",
         ]
+        args.append("--auto-gain" if config.auto_gain_enabled else "--no-auto-gain")
         args.append("--save-audio" if config.save_audio else "--no-save-audio")
         args.append("--notify" if config.notification_enabled else "--no-notify")
         args.append("--sound" if config.notification_sound else "--no-sound")
@@ -1063,6 +1064,7 @@ def _record_audio_test(device_index: int, seconds: float) -> dict:
     except Exception as exc:
         return {"ok": False, "message": f"PyAudio unavailable: {exc}", "has_signal": False}
 
+    config = load_app_config().client
     audio = pyaudio.PyAudio()
     seconds = max(0.5, min(float(seconds or 3.0), 5.0))
     try:
@@ -1078,6 +1080,7 @@ def _record_audio_test(device_index: int, seconds: float) -> dict:
             preferred_sample_rate=0,
             configured_sample_rate=48000,
             preferred_channels=2,
+            auto_gain_enabled=config.auto_gain_enabled,
             logger=logger,
         )
         level = capture["audio_level"]
@@ -1103,8 +1106,11 @@ def _record_audio_test(device_index: int, seconds: float) -> dict:
             "channel_analysis": capture.get("channel_analysis", []),
             "stereo_correlation": capture.get("stereo_correlation"),
             "source_audio_level": capture.get("source_audio_level", {}),
+            "processed_audio_level": capture.get("processed_audio_level", {}),
             "input_output_gain_ratio": capture.get("input_output_gain_ratio", 1.0),
+            "gain_db": capture.get("gain_db", 0.0),
             "volume_policy": capture.get("volume_policy", "passthrough_no_gain"),
+            "auto_gain_enabled": config.auto_gain_enabled,
             "quality_state": capture.get("quality_state"),
             "audio_wav_base64": base64.b64encode(wav_data).decode("ascii"),
             "normalized_audio": capture.get("normalized_audio", b""),
@@ -1182,6 +1188,7 @@ async def test_audio_input(req: AudioTestRequest):
 
 def _capture_device_level(audio: Any, pyaudio_module: Any, device: dict, seconds: float, waveform_points: int) -> dict:
     try:
+        config = load_app_config().client
         capture = capture_input_once(
             audio,
             pyaudio_module,
@@ -1191,6 +1198,7 @@ def _capture_device_level(audio: Any, pyaudio_module: Any, device: dict, seconds
             configured_sample_rate=48000,
             preferred_channels=2,
             waveform_points=waveform_points,
+            auto_gain_enabled=config.auto_gain_enabled,
             logger=None,
         )
         return {
@@ -1207,8 +1215,11 @@ def _capture_device_level(audio: Any, pyaudio_module: Any, device: dict, seconds
             "channel_analysis": capture.get("channel_analysis", []),
             "stereo_correlation": capture.get("stereo_correlation"),
             "source_audio_level": capture.get("source_audio_level", {}),
+            "processed_audio_level": capture.get("processed_audio_level", {}),
             "input_output_gain_ratio": capture.get("input_output_gain_ratio", 1.0),
+            "gain_db": capture.get("gain_db", 0.0),
             "volume_policy": capture.get("volume_policy", "passthrough_no_gain"),
+            "auto_gain_enabled": config.auto_gain_enabled,
             "quality_state": capture.get("quality_state", ""),
             "waveform": capture.get("waveform") or [],
         }

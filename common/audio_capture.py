@@ -23,6 +23,9 @@ from common.audio_levels import measure_pcm16_level, pcm16_waveform, quality_mes
 
 
 PROFILE_STORE_PATH = os.path.join(DATA_DIR, "capture_profiles.json")
+AUTO_GAIN_TARGET_RMS_RATIO = 0.08
+AUTO_GAIN_MAX_GAIN_DB = 20.0
+AUTO_GAIN_PEAK_LIMIT_RATIO = 0.95
 
 
 def pyaudio_host_api(audio: Any, host_api_index: int) -> str:
@@ -349,28 +352,87 @@ def _level_ratio(output_level: dict[str, Any], source_level: dict[str, Any]) -> 
     return round(output_peak / source_peak, 6)
 
 
+def _gain_pcm16(audio_data: bytes, gain: float, peak_limit_ratio: float) -> bytes:
+    if not audio_data:
+        return b""
+    samples = _pcm16_samples(audio_data)
+    if not samples:
+        return b""
+    limit = max(1, min(32767, int(round(32767 * peak_limit_ratio))))
+    output = array("h")
+    for sample in samples:
+        value = int(round(float(sample) * gain))
+        output.append(max(-limit, min(limit, value)))
+    return output.tobytes()
+
+
+def apply_auto_gain_pcm16(
+    audio_data: bytes,
+    enabled: bool = True,
+    target_rms_ratio: float = AUTO_GAIN_TARGET_RMS_RATIO,
+    max_gain_db: float = AUTO_GAIN_MAX_GAIN_DB,
+    peak_limit_ratio: float = AUTO_GAIN_PEAK_LIMIT_RATIO,
+) -> dict[str, Any]:
+    source_level = measure_pcm16_level(audio_data)
+    if not enabled or not audio_data or not source_level.get("has_signal"):
+        return {
+            "processed_audio": audio_data,
+            "source_audio_level": source_level,
+            "processed_audio_level": source_level,
+            "input_output_gain_ratio": 1.0,
+            "gain_db": 0.0,
+            "volume_policy": "passthrough_no_gain",
+        }
+
+    rms_ratio = float(source_level.get("rms_ratio") or 0.0)
+    peak_ratio = float(source_level.get("peak_ratio") or 0.0)
+    max_gain = 10 ** (max(0.0, float(max_gain_db or 0.0)) / 20.0)
+    desired_gain = float(target_rms_ratio or 0.0) / rms_ratio if rms_ratio > 0 else max_gain
+    gain = min(max_gain, max(1.0, desired_gain))
+    if peak_ratio > 0:
+        gain = min(gain, max(1.0, float(peak_limit_ratio or 1.0) / peak_ratio))
+    gain = max(1.0, gain)
+
+    processed_audio = _gain_pcm16(audio_data, gain, peak_limit_ratio)
+    processed_level = measure_pcm16_level(processed_audio)
+    gain_db = 20.0 * math.log10(gain) if gain > 0 else 0.0
+    return {
+        "processed_audio": processed_audio,
+        "source_audio_level": source_level,
+        "processed_audio_level": processed_level,
+        "input_output_gain_ratio": _level_ratio(processed_level, source_level),
+        "gain_db": round(gain_db, 3),
+        "volume_policy": "auto_gain_limited",
+    }
+
+
 def normalize_capture_audio(
     audio_data: bytes,
     capture_channels: int,
     preferred_strategy: str = "",
     preferred_channel_index: int = -1,
+    auto_gain_enabled: bool = True,
 ) -> dict[str, Any]:
     if capture_channels <= 1 or not audio_data:
-        level = measure_pcm16_level(audio_data)
+        gain = apply_auto_gain_pcm16(audio_data, enabled=auto_gain_enabled)
+        source_level = gain["source_audio_level"]
+        level = gain["processed_audio_level"]
         return {
-            "normalized_audio": audio_data,
+            "normalized_audio": gain["processed_audio"],
             "normalized_channels": 1,
             "normalized_strategy": "mono",
             "normalized_channel_index": 0 if audio_data else -1,
             "audio_level": level,
-            "source_audio_level": level,
-            "input_output_gain_ratio": 1.0,
-            "volume_policy": "passthrough_no_gain",
+            "source_audio_level": source_level,
+            "processed_audio_level": level,
+            "input_output_gain_ratio": gain["input_output_gain_ratio"],
+            "gain_db": gain["gain_db"],
+            "volume_policy": gain["volume_policy"],
             "channel_analysis": [
                 {
                     "strategy": "mono",
                     "channel_index": 0 if audio_data else -1,
-                    "audio_level": level,
+                    "audio_level": source_level,
                     "selectable": True,
                 }
             ],
@@ -403,15 +465,19 @@ def normalize_capture_audio(
     }
     best = max(candidates, key=lambda item: _candidate_rank(item, remembered))
     source_level = best.get("source_audio_level") or best["audio_level"]
+    gain = apply_auto_gain_pcm16(best["normalized_audio"], enabled=auto_gain_enabled)
+    processed_level = gain["processed_audio_level"]
     return {
-        "normalized_audio": best["normalized_audio"],
+        "normalized_audio": gain["processed_audio"],
         "normalized_channels": 1,
         "normalized_strategy": best["normalized_strategy"],
         "normalized_channel_index": best["normalized_channel_index"],
-        "audio_level": best["audio_level"],
+        "audio_level": processed_level,
         "source_audio_level": source_level,
-        "input_output_gain_ratio": _level_ratio(best["audio_level"], source_level),
-        "volume_policy": "passthrough_no_gain",
+        "processed_audio_level": processed_level,
+        "input_output_gain_ratio": gain["input_output_gain_ratio"],
+        "gain_db": gain["gain_db"],
+        "volume_policy": gain["volume_policy"],
         "channel_analysis": [
             {
                 "strategy": item["normalized_strategy"],
@@ -543,6 +609,7 @@ def capture_input_once(
     configured_sample_rate: int = 48000,
     preferred_channels: int = 1,
     waveform_points: int = 0,
+    auto_gain_enabled: bool = True,
     logger: Any | None = None,
 ) -> dict[str, Any]:
     seconds = max(0.08, float(seconds or 0.0))
@@ -574,6 +641,7 @@ def capture_input_once(
                 if profile.get("preferred_normalized_channel_index") is not None
                 else -1
             ),
+            auto_gain_enabled=auto_gain_enabled,
         )
         audio_level = normalized["audio_level"]
         message = quality_message(audio_level)
@@ -587,7 +655,9 @@ def capture_input_once(
             "channel_analysis": normalized["channel_analysis"],
             "stereo_correlation": normalized["stereo_correlation"],
             "source_audio_level": normalized.get("source_audio_level") or audio_level,
+            "processed_audio_level": normalized.get("processed_audio_level") or audio_level,
             "input_output_gain_ratio": normalized.get("input_output_gain_ratio", 1.0),
+            "gain_db": normalized.get("gain_db", 0.0),
             "volume_policy": normalized.get("volume_policy", "passthrough_no_gain"),
             "audio_level": audio_level,
             "quality_state": str(audio_level.get("quality_state") or ""),

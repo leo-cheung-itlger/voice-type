@@ -85,6 +85,7 @@ def init_engine() -> ASREngine:
 def playback_and_capture(reference_wav: Path, device_index: int, seconds: float) -> dict:
     import pyaudio
 
+    config = load_app_config().client
     ffplay = ROOT / "tools" / "ffmpeg" / "bin" / "ffplay.exe"
     if not ffplay.exists():
         raise FileNotFoundError(f"ffplay missing: {ffplay}")
@@ -106,6 +107,7 @@ def playback_and_capture(reference_wav: Path, device_index: int, seconds: float)
             configured_sample_rate=48000,
             preferred_channels=2,
             waveform_points=64,
+            auto_gain_enabled=config.auto_gain_enabled,
             logger=None,
         )
     finally:

@@ -98,6 +98,7 @@ class VoiceClient:
             input_device_name=config.input_device_name,
             input_device_host_api=config.input_device_host_api,
             input_device_sample_rate=config.input_device_sample_rate,
+            auto_gain_enabled=config.auto_gain_enabled,
         )
         self._notifier = RecordingNotifier(
             enabled=config.notification_enabled,
@@ -164,12 +165,14 @@ class VoiceClient:
             self._config.input_device_name,
             self._config.input_device_host_api,
             self._config.input_device_sample_rate,
+            self._config.auto_gain_enabled,
         )
         new_device = (
             config.input_device_index,
             config.input_device_name,
             config.input_device_host_api,
             config.input_device_sample_rate,
+            config.auto_gain_enabled,
         )
 
         self._config = config
@@ -180,6 +183,7 @@ class VoiceClient:
             input_device_name=config.input_device_name,
             input_device_host_api=config.input_device_host_api,
             input_device_sample_rate=config.input_device_sample_rate,
+            auto_gain_enabled=config.auto_gain_enabled,
         )
         self._notifier.configure(
             enabled=config.notification_enabled,
@@ -433,7 +437,7 @@ class VoiceClient:
         audio_level = capture.get("audio_level", self._recorder.audio_level(capture))
         quality_state = str(audio_level.get("quality_state") or "")
         logger.info(
-            "Recording level: rms=%s peak=%s signal=%s quality=%s sample_rate=%s host_api=%s capture_channels=%s normalized_channels=%s strategy=%s volume_policy=%s gain_ratio=%s preferred=%s:%s held=%ss recorded=%ss ratio=%s",
+            "Recording level: rms=%s peak=%s signal=%s quality=%s sample_rate=%s host_api=%s capture_channels=%s normalized_channels=%s strategy=%s volume_policy=%s gain_ratio=%s gain_db=%s auto_gain=%s preferred=%s:%s held=%ss recorded=%ss ratio=%s",
             audio_level.get("rms_ratio"),
             audio_level.get("peak_ratio"),
             audio_level.get("has_signal"),
@@ -445,6 +449,8 @@ class VoiceClient:
             capture.get("normalized_strategy", "mono"),
             capture.get("volume_policy", "passthrough_no_gain"),
             capture.get("input_output_gain_ratio", 1.0),
+            capture.get("gain_db", 0.0),
+            capture.get("auto_gain_enabled", False),
             capture.get("preferred_normalized_strategy", ""),
             capture.get("preferred_normalized_channel_index", -1),
             capture["held_seconds"],
@@ -487,8 +493,11 @@ class VoiceClient:
             "channel_analysis": capture.get("channel_analysis", []),
             "stereo_correlation": capture.get("stereo_correlation"),
             "source_audio_level": capture.get("source_audio_level", {}),
+            "processed_audio_level": capture.get("processed_audio_level", {}),
             "input_output_gain_ratio": capture.get("input_output_gain_ratio", 1.0),
+            "gain_db": capture.get("gain_db", 0.0),
             "volume_policy": capture.get("volume_policy", "passthrough_no_gain"),
+            "auto_gain_enabled": capture.get("auto_gain_enabled", False),
             "device_name": capture.get("device_name", ""),
             "held_seconds": capture.get("held_seconds", 0),
             "recorded_duration_seconds": capture.get("recorded_duration_seconds", 0),
@@ -576,8 +585,11 @@ class VoiceClient:
                 "channel_analysis": item.get("channel_analysis", []),
                 "stereo_correlation": item.get("stereo_correlation"),
                 "source_audio_level": item.get("source_audio_level", {}),
+                "processed_audio_level": item.get("processed_audio_level", {}),
                 "input_output_gain_ratio": item.get("input_output_gain_ratio", 1.0),
+                "gain_db": item.get("gain_db", 0.0),
                 "volume_policy": item.get("volume_policy", "passthrough_no_gain"),
+                "auto_gain_enabled": item.get("auto_gain_enabled", False),
                 "device_name": item.get("device_name", ""),
                 "held_seconds": item.get("held_seconds", 0),
                 "recorded_duration_seconds": item.get("recorded_duration_seconds", 0),
@@ -678,6 +690,10 @@ def main():
             config.input_device_sample_rate = int(arg.split("=", 1)[1])
         elif arg.startswith("--min-press-seconds="):
             config.min_press_seconds = float(arg.split("=", 1)[1])
+        elif arg == "--auto-gain":
+            config.auto_gain_enabled = True
+        elif arg == "--no-auto-gain":
+            config.auto_gain_enabled = False
         elif arg == "--save-audio":
             config.save_audio = True
         elif arg == "--no-save-audio":

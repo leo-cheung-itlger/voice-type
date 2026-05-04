@@ -49,7 +49,7 @@ Validate the microphone regression harness against the user-provided reference s
 venv\Scripts\python.exe scripts\validate_audio_regression.py
 ```
 
-This converts the reference `.weba` file to `48k mono`, plays it through the current speaker output, records from the requested microphones, runs the recorded WAV back through the local `qwen3-asr-1.7b`, and writes validation WAVs under `data\transcription_validation\audio_regression\`. Use the `3.5mm` microphone for speaker-facing playback validation; the laptop array microphone should be validated in its real physical position, not forced to share the same speaker geometry. Caps Lock validation should report the same remembered `normalized_strategy`/channel preference as the passing Settings test for the same microphone.
+This converts the reference `.weba` file to `48k mono`, plays it through the current speaker output, records from the requested microphones, runs the recorded WAV back through the local `qwen3-asr-1.7b`, and writes validation WAVs under `data\transcription_validation\audio_regression\`. Use the `3.5mm` microphone for speaker-facing playback validation; the laptop array microphone should be validated in its real physical position, not forced to share the same speaker geometry. Caps Lock validation should report the same remembered `normalized_strategy`/channel preference as the passing Settings test for the same microphone, then default-on `auto_gain_enabled=true` should apply post-capture gain only when effective signal is present.
 
 Stop desktop services:
 
@@ -243,7 +243,7 @@ For API changes:
 4. If the change touches history archive paths, verify folder-open endpoints remain constrained to VoiceType archive/data roots and only open existing files/folders.
 5. If the change touches hotwords, verify hotword read/write/reload.
 6. If the change touches process control, verify start/stop responses and status refresh.
-7. If the change touches audio capture, verify `/api/audio/test-input` returns the actual `capture_host_api`, `sample_rate`, `capture_channels`, `normalized_strategy`, `quality_state`, and `recognized_text`.
+7. If the change touches audio capture, verify `/api/audio/test-input` returns the actual `capture_host_api`, `sample_rate`, `capture_channels`, `normalized_strategy`, `quality_state`, `recognized_text`, `volume_policy`, `gain_db`, and `input_output_gain_ratio`.
 
 For daily ASR changes:
 
@@ -254,7 +254,7 @@ For daily ASR changes:
 5. Confirm saved audio path is present when recording save is enabled.
 6. Restart server/client and confirm status recovers.
 7. If recording notifications are enabled, confirm a topmost desktop prompt and a short beep appear on start and finish.
-8. For Caps Lock audio-quality checks, hold the shortcut for about 3 seconds and inspect the newest `result.json`: `recorded_duration_seconds` should be close to `held_seconds`, and `capture_realtime_ratio` should be at least `0.85`.
+8. For Caps Lock audio-quality checks, hold the shortcut for about 3 seconds and inspect the newest `result.json`: `recorded_duration_seconds` should be close to `held_seconds`, `capture_realtime_ratio` should be at least `0.85`, and normal quiet speech should usually show `auto_gain_enabled=true`, `volume_policy=auto_gain_limited`, and a nonzero `gain_db`.
 
 Microphone regression checks:
 
@@ -296,7 +296,7 @@ Microphone selection checks:
 4. Click `测试`, speak for about 3 seconds, and confirm the UI shows one recording progress circle followed by one playback progress circle. The button must stay disabled until playback finishes, and the captured sample should auto-play once.
 5. Confirm the test result says `有声音` with non-trivial RMS/Peak values. For WASAPI 3.5mm device `20`, `/api/audio/test-input` should return `sample_rate=48000` and a WAV preview.
 6. Press the shortcut after saving and confirm `logs\recorder_*.log` reports the chosen device index/name and actual sample rate without requiring a restart. For device `20`, logs should show `rate=48000` and should not show `Failed to open input stream at 44100Hz`.
-7. Confirm saved/test WAVs report `volume_policy=passthrough_no_gain` and `input_output_gain_ratio` close to `1.0`. Stereo captures should choose a real `channel_N` for saved/ASR mono audio; average downmix may appear only as non-selectable diagnostics and must not be the emitted audio path.
+7. Confirm saved/test WAVs choose a real `channel_N` for saved/ASR mono audio; average downmix may appear only as non-selectable diagnostics and must not be the emitted audio path. With `client.auto_gain_enabled=true`, quiet but valid speech should report `volume_policy=auto_gain_limited`, `gain_db`, `source_audio_level`, and `processed_audio_level`; silence or near-silence should remain `too_quiet` with `volume_policy=passthrough_no_gain`.
 8. If Windows changes device indexes after reboot, the client should remap the saved device by name/host API. If the saved device is missing, recording should fall back to the smart default, preferring real 3.5mm/WASAPI or DirectSound microphones and avoiding NetEase/remote/virtual/mapping inputs.
 9. If a real-time recording has near-zero RMS/Peak, the client should show `未检测到有效麦克风输入` and skip ASR submission.
 

@@ -84,6 +84,13 @@
         </label>
         <label class="row setting-row">
           <span>
+            <span class="value">自动增益</span>
+            <span class="label">低音量录音会自动放大并限制峰值</span>
+          </span>
+          <input v-model="store.config.client.auto_gain_enabled" type="checkbox" />
+        </label>
+        <label class="row setting-row">
+          <span>
             <span class="value">保存录音</span>
             <span class="label">写入结构化归档目录</span>
           </span>
@@ -360,8 +367,11 @@ const audioTestLabel = computed(() => {
     result.capture_channels ? `${result.capture_channels}ch` : '',
     result.normalized_strategy || '',
   ].filter(Boolean).join(' · ')
+  const gain = result.volume_policy === 'auto_gain_limited'
+    ? ` · 增益 ${Number(result.gain_db || 0).toFixed(1)}dB`
+    : ''
   const recognition = result.recognized_text ? ` · 识别：${result.recognized_text}` : result.recognition_error ? ` · 识别失败：${result.recognition_error}` : ''
-  return `${device}${result.message}${profile ? ` · ${profile}` : ''} · RMS ${(rms * 100).toFixed(2)}% · Peak ${(peak * 100).toFixed(2)}%${recognition}`
+  return `${device}${result.message}${profile ? ` · ${profile}` : ''}${gain} · RMS ${(rms * 100).toFixed(2)}% · Peak ${(peak * 100).toFixed(2)}%${recognition}`
 })
 
 const microphoneTestButtonLabel = computed(() => {

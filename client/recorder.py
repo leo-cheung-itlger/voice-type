@@ -23,6 +23,7 @@ class AudioRecorder:
         input_device_name: str = "",
         input_device_host_api: str = "",
         input_device_sample_rate: int = 0,
+        auto_gain_enabled: bool = True,
     ):
         self._sample_rate = sample_rate
         self._active_sample_rate = sample_rate
@@ -32,6 +33,7 @@ class AudioRecorder:
         self._input_device_name = input_device_name
         self._input_device_host_api = input_device_host_api
         self._input_device_sample_rate = input_device_sample_rate
+        self._auto_gain_enabled = bool(auto_gain_enabled)
         self._active_device_index: Optional[int] = input_device_index if input_device_index >= 0 else None
         self._active_device_name = input_device_name
         self._active_host_api = input_device_host_api
@@ -55,6 +57,7 @@ class AudioRecorder:
         input_device_name: str,
         input_device_host_api: str,
         input_device_sample_rate: int,
+        auto_gain_enabled: bool,
     ):
         self._sample_rate = int(sample_rate or self._sample_rate)
         self._channels = int(channels or self._channels)
@@ -62,6 +65,7 @@ class AudioRecorder:
         self._input_device_name = input_device_name or ""
         self._input_device_host_api = input_device_host_api or ""
         self._input_device_sample_rate = int(input_device_sample_rate or 0)
+        self._auto_gain_enabled = bool(auto_gain_enabled)
 
     def start(self) -> bool:
         try:
@@ -183,6 +187,7 @@ class AudioRecorder:
             self._active_capture_channels,
             preferred_strategy=self._preferred_normalized_strategy,
             preferred_channel_index=self._preferred_normalized_channel_index,
+            auto_gain_enabled=self._auto_gain_enabled,
         )
         normalized_audio = normalized["normalized_audio"]
         level = normalized["audio_level"] or measure_pcm16_level(normalized_audio)
@@ -206,8 +211,11 @@ class AudioRecorder:
             "channel_analysis": normalized.get("channel_analysis") or [],
             "stereo_correlation": normalized.get("stereo_correlation"),
             "source_audio_level": normalized.get("source_audio_level") or level,
+            "processed_audio_level": normalized.get("processed_audio_level") or level,
             "input_output_gain_ratio": normalized.get("input_output_gain_ratio", 1.0),
+            "gain_db": normalized.get("gain_db", 0.0),
             "volume_policy": normalized.get("volume_policy", "passthrough_no_gain"),
+            "auto_gain_enabled": self._auto_gain_enabled,
             "device_index": self._active_device_index,
             "device_name": self._active_device_name,
             "host_api": self._active_host_api,
@@ -216,7 +224,7 @@ class AudioRecorder:
         }
         self._last_capture = capture
         logger.info(
-            "Recording stopped, raw=%s bytes normalized=%s bytes rms=%s peak=%s signal=%s quality=%s strategy=%s volume_policy=%s gain_ratio=%s preferred=%s:%s",
+            "Recording stopped, raw=%s bytes normalized=%s bytes rms=%s peak=%s signal=%s quality=%s strategy=%s volume_policy=%s gain_ratio=%s gain_db=%s auto_gain=%s preferred=%s:%s",
             len(raw_audio),
             len(normalized_audio),
             level["rms_ratio"],
@@ -226,6 +234,8 @@ class AudioRecorder:
             self._normalized_strategy,
             capture["volume_policy"],
             capture["input_output_gain_ratio"],
+            capture["gain_db"],
+            self._auto_gain_enabled,
             self._preferred_normalized_strategy or "-",
             self._preferred_normalized_channel_index,
         )

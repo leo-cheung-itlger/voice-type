@@ -41,6 +41,7 @@ export interface AppConfig {
     input_device_name: string
     input_device_host_api: string
     input_device_sample_rate: number
+    auto_gain_enabled: boolean
     output_mode: 'clipboard' | 'keyboard' | 'hybrid'
     save_audio: boolean
     audio_dir: string
@@ -217,8 +218,11 @@ export interface AudioInputTestResult {
   }>
   stereo_correlation?: number
   source_audio_level?: Record<string, unknown>
+  processed_audio_level?: Record<string, unknown>
   input_output_gain_ratio?: number
+  gain_db?: number
   volume_policy?: string
+  auto_gain_enabled?: boolean
   quality_state?: string
   clipping_ratio?: number
   dc_offset_ratio?: number
@@ -259,8 +263,11 @@ export interface AudioLevelDevice extends AudioInputDevice {
   }>
   stereo_correlation?: number
   source_audio_level?: Record<string, unknown>
+  processed_audio_level?: Record<string, unknown>
   input_output_gain_ratio?: number
+  gain_db?: number
   volume_policy?: string
+  auto_gain_enabled?: boolean
   quality_state?: string
   clipping_ratio?: number
   dc_offset_ratio?: number
@@ -361,6 +368,7 @@ const defaultConfig: AppConfig = {
     input_device_name: '',
     input_device_host_api: '',
     input_device_sample_rate: 0,
+    auto_gain_enabled: true,
     output_mode: 'clipboard',
     save_audio: true,
     audio_dir: '',
