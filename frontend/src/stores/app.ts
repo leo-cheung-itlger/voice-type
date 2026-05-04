@@ -41,6 +41,7 @@ export interface AppConfig {
     input_device_name: string
     input_device_host_api: string
     input_device_sample_rate: number
+    windows_voice_capture_enabled: boolean
     auto_gain_enabled: boolean
     output_mode: 'clipboard' | 'keyboard' | 'hybrid'
     save_audio: boolean
@@ -200,6 +201,7 @@ export interface AudioInputTestResult {
   device_index?: number
   device_name?: string
   host_api?: string
+  capture_backend?: string
   capture_host_api?: string
   sample_rate?: number
   capture_channels?: number
@@ -223,6 +225,8 @@ export interface AudioInputTestResult {
   gain_db?: number
   volume_policy?: string
   auto_gain_enabled?: boolean
+  windows_voice_capture_enabled?: boolean
+  windows_voice_capture?: Record<string, unknown>
   quality_state?: string
   clipping_ratio?: number
   dc_offset_ratio?: number
@@ -246,6 +250,7 @@ export interface AudioLevelDevice extends AudioInputDevice {
   message: string
   has_signal: boolean
   sample_rate?: number
+  capture_backend?: string
   capture_host_api?: string
   capture_channels?: number
   normalized_channels?: number
@@ -268,6 +273,8 @@ export interface AudioLevelDevice extends AudioInputDevice {
   gain_db?: number
   volume_policy?: string
   auto_gain_enabled?: boolean
+  windows_voice_capture_enabled?: boolean
+  windows_voice_capture?: Record<string, unknown>
   quality_state?: string
   clipping_ratio?: number
   dc_offset_ratio?: number
@@ -368,6 +375,7 @@ const defaultConfig: AppConfig = {
     input_device_name: '',
     input_device_host_api: '',
     input_device_sample_rate: 0,
+    windows_voice_capture_enabled: true,
     auto_gain_enabled: true,
     output_mode: 'clipboard',
     save_audio: true,

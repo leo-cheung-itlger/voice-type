@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="/favicon.svg">
+  <title>麦克风测试</title>
+</head>
+<body>
+  <h1>麦克风测试</h1>
+
+  <p>这个页面只用于开发测试，不属于 VoiceType 主界面。</p>
+
+  <p>
+    <label>
+      录音时长：
+      <select id="seconds">
+        <option value="3">3 秒</option>
+        <option value="5" selected>5 秒</option>
+        <option value="8">8 秒</option>
+        <option value="12">12 秒</option>
+      </select>
+    </label>
+    <button id="start">开始测试</button>
+  </p>
+
+  <p id="status">状态：等待开始</p>
+
+  <hr>
+
+  <div id="results"></div>
+
+  <script>
+    const startButton = document.getElementById('start')
+    const secondsSelect = document.getElementById('seconds')
+    const statusEl = document.getElementById('status')
+    const resultsEl = document.getElementById('results')
+
+    function setStatus(text) {
+      statusEl.textContent = `状态：${text}`
+    }
+
+    function audioUrl(path) {
+      if (!path) return ''
+      if (path.startsWith('/api/')) return path
+      return path.startsWith('/') ? `/api${path}` : `/api/${path}`
+    }
+
+    function ratio(value) {
+      return `${(Number(value || 0) * 100).toFixed(2)}%`
+    }
+
+    function quality(value) {
+      if (value === 'ok') return '有效'
+      if (value === 'too_quiet') return '太安静'
+      if (value === 'clipping') return '爆音/削顶'
+      return value || '未知'
+    }
+
+    function asrText(result) {
+      const row = result?.asr?.results?.standard_asr_16k_mono
+      if (!row) return '没有 ASR 结果'
+      if (row.error) return `失败：${row.error}`
+      return row.text || '没有识别到文字'
+    }
+
+    function errorText(error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (message.includes('Permission denied') || message.includes('NotAllowedError')) {
+        return '浏览器拒绝了麦克风权限。可以换 Edge/Chrome 打开这个地址，或在地址栏允许麦克风；后端录音测试会继续执行。'
+      }
+      return message
+    }
+
+    function addErrorResult(title, error) {
+      const box = document.createElement('div')
+      box.innerHTML = `
+        <h2>${title}</h2>
+        <p>失败：${errorText(error)}</p>
+        <hr>
+      `
+      resultsEl.appendChild(box)
+    }
+
+    function addBrowserResult(title, localUrl, serverResult) {
+      const level = serverResult.file.audio_level || {}
+      const box = document.createElement('div')
+      box.innerHTML = `
+        <h2>${title}</h2>
+        <p>浏览器原始录音：</p>
+        <audio controls src="${localUrl}"></audio>
+        <p>转成 AI 输入后的 WAV：</p>
+        <audio controls src="${audioUrl(serverResult.file.url)}"></audio>
+        <p>音量：RMS ${ratio(level.rms_ratio)} / Peak ${ratio(level.peak_ratio)} / ${quality(level.quality_state)}</p>
+        <p>AI 听到：${asrText(serverResult)}</p>
+        <p>保存目录：${serverResult.output_dir}</p>
+        <hr>
+      `
+      resultsEl.appendChild(box)
+    }
+
+    function addBackendResult(title, result) {
+      const raw = result.files.raw
+      const asr = result.files.standard_asr_16k_mono
+      const level = asr.audio_level || {}
+      const textRow = result?.asr?.results?.standard_asr_16k_mono
+      const box = document.createElement('div')
+      box.innerHTML = `
+        <h2>${title}</h2>
+        <p>VoiceType 原始录音：</p>
+        <audio controls src="${audioUrl(raw.url)}"></audio>
+        <p>VoiceType 给 AI 的 WAV：</p>
+        <audio controls src="${audioUrl(asr.url)}"></audio>
+        <p>音量：RMS ${ratio(level.rms_ratio)} / Peak ${ratio(level.peak_ratio)} / ${quality(level.quality_state)}</p>
+        <p>AI 听到：${textRow?.error ? `失败：${textRow.error}` : (textRow?.text || '没有识别到文字')}</p>
+        <p>保存目录：${result.output_dir}</p>
+        <hr>
+      `
+      resultsEl.appendChild(box)
+    }
+
+    function addWindowsResult(title, result) {
+      const file = result.file
+      const level = file.audio_level || {}
+      const textRow = result?.asr?.results?.standard_asr_16k_mono
+      const helper = result.helper || {}
+      const box = document.createElement('div')
+      box.innerHTML = `
+        <h2>${title}</h2>
+        <p>采集模式：${result.recording?.media_category || 'VoiceTyping'} / ${result.recording?.audio_processing || 'Default'}</p>
+        <p>设备：${helper.device?.name || '未知'}</p>
+        <audio controls src="${audioUrl(file.url)}"></audio>
+        <p>格式：${file.sample_rate}Hz / ${file.channels}声道 / ${file.duration_seconds}秒</p>
+        <p>音量：RMS ${ratio(level.rms_ratio)} / Peak ${ratio(level.peak_ratio)} / ${quality(level.quality_state)}</p>
+        <p>AI 听到：${textRow?.error ? `失败：${textRow.error}` : (textRow?.text || '没有识别到文字')}</p>
+        <p>保存目录：${result.output_dir}</p>
+        <hr>
+      `
+      resultsEl.appendChild(box)
+    }
+
+    async function recordBrowser(seconds, processed) {
+      const constraints = {
+        audio: {
+          echoCancellation: processed,
+          noiseSuppression: processed,
+          autoGainControl: processed,
+          channelCount: 1,
+          sampleRate: 48000,
+        },
+      }
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      const options = {}
+      if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+        options.mimeType = 'audio/webm;codecs=opus'
+      }
+      const chunks = []
+      const recorder = new MediaRecorder(stream, options)
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size) chunks.push(event.data)
+      }
+      recorder.start()
+      await new Promise((resolve) => setTimeout(resolve, seconds * 1000))
+      await new Promise((resolve) => {
+        recorder.onstop = resolve
+        recorder.stop()
+      })
+      stream.getTracks().forEach((track) => track.stop())
+      return new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+    }
+
+    async function uploadBrowser(blob, label, processing) {
+      const form = new FormData()
+      form.append('file', blob, `${label}.webm`)
+      form.append('label', label)
+      form.append('processing', processing)
+      const response = await fetch('/api/audio/browser-probe', { method: 'POST', body: form })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || response.statusText)
+      return data
+    }
+
+    async function recordBackend(seconds) {
+      const response = await fetch('/api/audio/format-probe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seconds, run_asr: true }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || response.statusText)
+      return data
+    }
+
+    async function recordWindowsVoice(seconds) {
+      const response = await fetch('/api/audio/windows-voice-probe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seconds, run_asr: true }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || response.statusText)
+      return data
+    }
+
+    async function runTest() {
+      startButton.disabled = true
+      resultsEl.innerHTML = ''
+      const seconds = Number(secondsSelect.value || 5)
+      try {
+        setStatus('1/4 浏览器录音：关闭音频处理')
+        try {
+          const offBlob = await recordBrowser(seconds, false)
+          const offUrl = URL.createObjectURL(offBlob)
+          setStatus('1/4 上传并识别：关闭音频处理')
+          const offResult = await uploadBrowser(offBlob, 'browser_off', 'processing_off')
+          addBrowserResult('1. 浏览器录音：音频处理关闭', offUrl, offResult)
+        } catch (error) {
+          addErrorResult('1. 浏览器录音：音频处理关闭', error)
+        }
+
+        setStatus('2/4 浏览器录音：开启音频处理')
+        try {
+          const onBlob = await recordBrowser(seconds, true)
+          const onUrl = URL.createObjectURL(onBlob)
+          setStatus('2/4 上传并识别：开启音频处理')
+          const onResult = await uploadBrowser(onBlob, 'browser_on', 'processing_on')
+          addBrowserResult('2. 浏览器录音：音频处理开启', onUrl, onResult)
+        } catch (error) {
+          addErrorResult('2. 浏览器录音：音频处理开启', error)
+        }
+
+        setStatus('3/4 VoiceType 后端录音')
+        const backendResult = await recordBackend(seconds)
+        addBackendResult('3. VoiceType 当前后端录音', backendResult)
+
+        setStatus('4/4 Windows 语音增强采集')
+        const windowsResult = await recordWindowsVoice(seconds)
+        addWindowsResult('4. Windows 语音增强采集', windowsResult)
+
+        setStatus('完成')
+      } catch (error) {
+        setStatus(`失败：${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        startButton.disabled = false
+      }
+    }
+
+    startButton.addEventListener('click', runTest)
+  </script>
+</body>
+</html>

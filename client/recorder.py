@@ -1,4 +1,8 @@
 import os
+import subprocess
+import time
+import uuid
+import wave
 from typing import Any, Optional
 
 from common.audio_capture import (
@@ -9,8 +13,38 @@ from common.audio_capture import (
 )
 from common.audio_levels import measure_pcm16_level
 from common.logger import setup_logger
+from config.settings import BASE_DIR, DATA_DIR
 
 logger = setup_logger("recorder")
+
+
+def _repair_windows_text(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _repair_windows_text(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_repair_windows_text(item) for item in value]
+    if not isinstance(value, str):
+        return value
+    if not any(marker in value for marker in ("é", "å", "è", "\x85", "\x8b", "\x8e")):
+        return value
+    try:
+        repaired = value.encode("latin-1").decode("utf-8")
+    except UnicodeError:
+        return value
+    original_cjk = sum(1 for char in value if "\u4e00" <= char <= "\u9fff")
+    repaired_cjk = sum(1 for char in repaired if "\u4e00" <= char <= "\u9fff")
+    return repaired if repaired_cjk > original_cjk else value
+
+
+def _read_wav_pcm16(path: str) -> tuple[bytes, int, int]:
+    with wave.open(path, "rb") as wav_file:
+        sample_rate = int(wav_file.getframerate())
+        channels = int(wav_file.getnchannels())
+        sample_width = int(wav_file.getsampwidth())
+        if sample_width != 2:
+            raise ValueError(f"Expected PCM16 WAV, got sample width {sample_width}")
+        data = wav_file.readframes(wav_file.getnframes())
+    return data, sample_rate, channels
 
 
 class AudioRecorder:
@@ -23,6 +57,7 @@ class AudioRecorder:
         input_device_name: str = "",
         input_device_host_api: str = "",
         input_device_sample_rate: int = 0,
+        windows_voice_capture_enabled: bool = True,
         auto_gain_enabled: bool = True,
     ):
         self._sample_rate = sample_rate
@@ -33,6 +68,7 @@ class AudioRecorder:
         self._input_device_name = input_device_name
         self._input_device_host_api = input_device_host_api
         self._input_device_sample_rate = input_device_sample_rate
+        self._windows_voice_capture_enabled = bool(windows_voice_capture_enabled)
         self._auto_gain_enabled = bool(auto_gain_enabled)
         self._active_device_index: Optional[int] = input_device_index if input_device_index >= 0 else None
         self._active_device_name = input_device_name
@@ -47,6 +83,10 @@ class AudioRecorder:
         self._audio_chunks: list = []
         self._stream = None
         self._pyaudio = None
+        self._capture_backend = "pyaudio_wasapi"
+        self._windows_process: Optional[subprocess.Popen] = None
+        self._windows_output_path = ""
+        self._windows_started_at = 0.0
         self._last_capture: dict[str, Any] | None = None
 
     def configure(
@@ -57,6 +97,7 @@ class AudioRecorder:
         input_device_name: str,
         input_device_host_api: str,
         input_device_sample_rate: int,
+        windows_voice_capture_enabled: bool,
         auto_gain_enabled: bool,
     ):
         self._sample_rate = int(sample_rate or self._sample_rate)
@@ -65,12 +106,21 @@ class AudioRecorder:
         self._input_device_name = input_device_name or ""
         self._input_device_host_api = input_device_host_api or ""
         self._input_device_sample_rate = int(input_device_sample_rate or 0)
+        self._windows_voice_capture_enabled = bool(windows_voice_capture_enabled)
         self._auto_gain_enabled = bool(auto_gain_enabled)
 
     def start(self) -> bool:
+        self._last_capture = None
+        if self._windows_voice_capture_enabled and os.name == "nt":
+            try:
+                return self._start_windows_voice_capture()
+            except Exception as e:
+                logger.warning("Windows voice capture failed to start, falling back to PyAudio/WASAPI: %s", e)
+
         try:
             import pyaudio
 
+            self._capture_backend = "pyaudio_wasapi"
             self._pyaudio = pyaudio.PyAudio()
             selected_device = resolve_input_device_index(
                 self._pyaudio,
@@ -123,7 +173,6 @@ class AudioRecorder:
             self._set_active_profile(profile)
             self._audio_chunks.clear()
             self._recording = True
-            self._last_capture = None
             device_label = "default" if self._active_device_index is None else f"{self._active_device_index}:{self._active_device_name}"
             logger.info(
                 "Recording started (rate=%s, channels=%s->%s, device=%s, host_api=%s)",
@@ -137,6 +186,90 @@ class AudioRecorder:
         except Exception as e:
             logger.error(f"Failed to start recording: {e}")
             return False
+
+    def _windows_helper_command(self, output_path: str) -> list[str]:
+        helper_project = os.path.join(BASE_DIR, "tools", "windows_voice_capture", "VoiceCaptureHelper.csproj")
+        helper_dll = os.path.join(
+            BASE_DIR,
+            "tools",
+            "windows_voice_capture",
+            "bin",
+            "x64",
+            "Release",
+            "net10.0-windows10.0.26100.0",
+            "VoiceCaptureHelper.dll",
+        )
+        if not os.path.isfile(helper_project):
+            raise FileNotFoundError(f"Windows voice capture helper is missing: {helper_project}")
+        helper_args = [
+            "--seconds",
+            "120",
+            "--output",
+            output_path,
+            "--device-name",
+            self._input_device_name or "",
+            "--category",
+            "VoiceTyping",
+            "--processing",
+            "Default",
+            "--wait-for-stdin",
+        ]
+        if os.path.isfile(helper_dll):
+            return ["dotnet", helper_dll, *helper_args]
+        return ["dotnet", "run", "--project", helper_project, "-c", "Release", "-p:Platform=x64", "--", *helper_args]
+
+    def _start_windows_voice_capture(self) -> bool:
+        runtime_dir = os.path.join(DATA_DIR, "runtime_capture")
+        os.makedirs(runtime_dir, exist_ok=True)
+        output_path = os.path.join(runtime_dir, f"windows_voice_{uuid.uuid4().hex}.wav")
+        command = self._windows_helper_command(output_path)
+        dotnet_home = os.path.join(DATA_DIR, "dotnet_home")
+        os.makedirs(dotnet_home, exist_ok=True)
+        env = os.environ.copy()
+        env["DOTNET_CLI_HOME"] = dotnet_home
+        env["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1"
+        env["DOTNET_NOLOGO"] = "1"
+        startupinfo = None
+        creationflags = 0
+        if os.name == "nt":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        self._windows_process = subprocess.Popen(
+            command,
+            cwd=BASE_DIR,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            startupinfo=startupinfo,
+            creationflags=creationflags,
+        )
+        time.sleep(0.25)
+        if self._windows_process.poll() is not None:
+            stdout, stderr = self._windows_process.communicate(timeout=2)
+            self._windows_process = None
+            raise RuntimeError((stderr or stdout or "Windows voice capture helper exited early").strip())
+        self._windows_output_path = output_path
+        self._windows_started_at = time.monotonic()
+        self._capture_backend = "windows_mediacapture"
+        self._active_sample_rate = 16000
+        self._active_capture_channels = 1
+        self._normalized_channels = 1
+        self._normalized_strategy = "windows_mediacapture"
+        self._normalized_channel_index = 0
+        self._active_host_api = "Windows MediaCapture"
+        self._active_device_name = self._input_device_name
+        self._audio_chunks.clear()
+        self._recording = True
+        logger.info(
+            "Recording started with Windows voice capture (device=%s, category=VoiceTyping, processing=Default)",
+            self._input_device_name or "default",
+        )
+        return True
 
     def _set_active_profile(self, profile: dict[str, Any]):
         self._active_device_index = profile.get("device_index")
@@ -153,6 +286,8 @@ class AudioRecorder:
         )
 
     def read_chunk(self) -> Optional[bytes]:
+        if self._recording and self._capture_backend == "windows_mediacapture":
+            return None
         if not self._recording or self._stream is None:
             return None
         try:
@@ -165,6 +300,9 @@ class AudioRecorder:
 
     def stop(self) -> dict[str, Any]:
         self._recording = False
+        if self._capture_backend == "windows_mediacapture" and self._windows_process is not None:
+            return self._stop_windows_voice_capture()
+
         raw_audio = b"".join(self._audio_chunks)
 
         if self._stream:
@@ -201,6 +339,7 @@ class AudioRecorder:
         capture = {
             "raw_audio": raw_audio,
             "normalized_audio": normalized_audio,
+            "capture_backend": self._capture_backend,
             "sample_rate": self._active_sample_rate,
             "capture_channels": self._active_capture_channels,
             "normalized_channels": self._normalized_channels,
@@ -238,6 +377,102 @@ class AudioRecorder:
             self._auto_gain_enabled,
             self._preferred_normalized_strategy or "-",
             self._preferred_normalized_channel_index,
+        )
+        return capture
+
+    def _stop_windows_voice_capture(self) -> dict[str, Any]:
+        process = self._windows_process
+        output_path = self._windows_output_path
+        self._windows_process = None
+        stdout = ""
+        stderr = ""
+        try:
+            if process.stdin:
+                process.stdin.write("\n")
+                process.stdin.flush()
+            stdout, stderr = process.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate(timeout=5)
+            raise RuntimeError("Windows voice capture helper did not stop in time")
+        finally:
+            self._windows_output_path = ""
+
+        if process.returncode != 0:
+            raise RuntimeError((stderr or stdout or "Windows voice capture helper failed").strip())
+        if not output_path or not os.path.isfile(output_path):
+            raise RuntimeError("Windows voice capture helper did not produce a WAV file")
+
+        audio_data, sample_rate, channels = _read_wav_pcm16(output_path)
+        helper_info: dict[str, Any] = {}
+        for line in reversed((stdout or "").splitlines()):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                import json
+
+                helper_info = _repair_windows_text(json.loads(line))
+                break
+            except Exception:
+                continue
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+
+        level = measure_pcm16_level(audio_data)
+        device = helper_info.get("device") if isinstance(helper_info.get("device"), dict) else {}
+        device_name = str(device.get("name") or self._input_device_name or "")
+        self._active_sample_rate = sample_rate
+        self._active_capture_channels = channels
+        self._normalized_channels = channels
+        self._normalized_strategy = "windows_mediacapture"
+        self._normalized_channel_index = 0
+        self._active_host_api = "Windows MediaCapture"
+        self._active_device_name = device_name
+        capture = {
+            "raw_audio": audio_data,
+            "normalized_audio": audio_data,
+            "capture_backend": "windows_mediacapture",
+            "sample_rate": sample_rate,
+            "capture_channels": channels,
+            "normalized_channels": channels,
+            "normalized_strategy": "windows_mediacapture",
+            "normalized_channel_index": 0,
+            "preferred_normalized_strategy": "",
+            "preferred_normalized_channel_index": -1,
+            "channel_analysis": [],
+            "stereo_correlation": None,
+            "source_audio_level": level,
+            "processed_audio_level": level,
+            "input_output_gain_ratio": 1.0,
+            "gain_db": 0.0,
+            "volume_policy": "windows_mediacapture_default_processing",
+            "auto_gain_enabled": False,
+            "windows_voice_capture_enabled": True,
+            "device_index": self._active_device_index,
+            "device_name": device_name,
+            "host_api": "Windows MediaCapture",
+            "audio_level": level,
+            "quality_state": str(level.get("quality_state") or ""),
+            "windows_voice_capture": {
+                "media_category": helper_info.get("media_category", "VoiceTyping"),
+                "audio_processing": helper_info.get("audio_processing", "Default"),
+                "helper_ok": bool(helper_info.get("ok", True)),
+                "helper_stdout": stdout[-1000:],
+                "helper_stderr": stderr[-1000:],
+            },
+        }
+        self._last_capture = capture
+        logger.info(
+            "Recording stopped with Windows voice capture, bytes=%s rms=%s peak=%s signal=%s quality=%s elapsed=%.3fs",
+            len(audio_data),
+            level["rms_ratio"],
+            level["peak_ratio"],
+            level["has_signal"],
+            level.get("quality_state"),
+            time.monotonic() - self._windows_started_at,
         )
         return capture
 

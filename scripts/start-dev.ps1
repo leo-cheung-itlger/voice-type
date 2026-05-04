@@ -17,18 +17,30 @@ if (-not (Test-Path $python)) {
 
 New-Item -ItemType Directory -Force -Path $logsPath | Out-Null
 
+function Start-BackgroundCommand {
+    param(
+        [string]$CommandLine,
+        [string]$WorkingDirectory
+    )
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = "cmd.exe"
+    $psi.Arguments = "/d /s /c `"$CommandLine`""
+    $psi.WorkingDirectory = $WorkingDirectory
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    [System.Diagnostics.Process]::Start($psi) | Out-Null
+}
+
 if (-not $NoClean) {
     & (Join-Path $PSScriptRoot "stop-dev.ps1") -Root $rootPath | Out-Null
     Start-Sleep -Seconds 1
 }
 
-Start-Process `
-    -FilePath $python `
-    -ArgumentList @("api\api_server.py") `
-    -WorkingDirectory $rootPath `
-    -WindowStyle Hidden `
-    -RedirectStandardOutput (Join-Path $logsPath "api_stdout.log") `
-    -RedirectStandardError (Join-Path $logsPath "api_stderr.log")
+$apiOut = Join-Path $logsPath "api_stdout.log"
+$apiErr = Join-Path $logsPath "api_stderr.log"
+Start-BackgroundCommand `
+    -CommandLine "`"$python`" api\api_server.py > `"$apiOut`" 2> `"$apiErr`"" `
+    -WorkingDirectory $rootPath
 
 $ready = $false
 for ($i = 0; $i -lt 60; $i++) {
@@ -47,11 +59,9 @@ if (-not $ready) {
 }
 
 if (Test-Path (Join-Path $frontendPath "node_modules")) {
-    Start-Process `
-        -FilePath "cmd.exe" `
-        -ArgumentList @("/c", "npm run dev -- --host 127.0.0.1 --port 55343 > ..\logs\frontend_dev.log 2>&1") `
-        -WorkingDirectory $frontendPath `
-        -WindowStyle Hidden
+    Start-BackgroundCommand `
+        -CommandLine "npm run dev -- --host 127.0.0.1 --port 55343 > ..\logs\frontend_dev.log 2>&1" `
+        -WorkingDirectory $frontendPath
 } else {
     Write-Warning "frontend\node_modules is missing. Run: cd frontend && npm install"
 }

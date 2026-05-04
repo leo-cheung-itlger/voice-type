@@ -98,6 +98,7 @@ class VoiceClient:
             input_device_name=config.input_device_name,
             input_device_host_api=config.input_device_host_api,
             input_device_sample_rate=config.input_device_sample_rate,
+            windows_voice_capture_enabled=config.windows_voice_capture_enabled,
             auto_gain_enabled=config.auto_gain_enabled,
         )
         self._notifier = RecordingNotifier(
@@ -165,6 +166,7 @@ class VoiceClient:
             self._config.input_device_name,
             self._config.input_device_host_api,
             self._config.input_device_sample_rate,
+            self._config.windows_voice_capture_enabled,
             self._config.auto_gain_enabled,
         )
         new_device = (
@@ -172,6 +174,7 @@ class VoiceClient:
             config.input_device_name,
             config.input_device_host_api,
             config.input_device_sample_rate,
+            config.windows_voice_capture_enabled,
             config.auto_gain_enabled,
         )
 
@@ -183,6 +186,7 @@ class VoiceClient:
             input_device_name=config.input_device_name,
             input_device_host_api=config.input_device_host_api,
             input_device_sample_rate=config.input_device_sample_rate,
+            windows_voice_capture_enabled=config.windows_voice_capture_enabled,
             auto_gain_enabled=config.auto_gain_enabled,
         )
         self._notifier.configure(
@@ -369,13 +373,13 @@ class VoiceClient:
 
         self._reload_config_if_needed(force=True)
         self._recording = True
-        self._key_down_at = time.monotonic()
         logger.info("Key pressed, starting recording")
 
         recorder_started_at = time.monotonic()
         if not self._recorder.start():
             self._recording = False
             return
+        self._key_down_at = time.monotonic()
         logger.info("Recorder start latency: %.3fs", time.monotonic() - recorder_started_at)
 
         self._notifier.recording_started()
@@ -384,8 +388,8 @@ class VoiceClient:
 
     async def _drain_recording(self):
         while self._recording and self._recorder.is_recording:
-            self._recorder.read_chunk()
-            await asyncio.sleep(0)
+            data = self._recorder.read_chunk()
+            await asyncio.sleep(0 if data else 0.05)
 
     async def _on_key_up(self):
         if not self._recording:
@@ -394,7 +398,12 @@ class VoiceClient:
         self._recording = False
         logger.info("Key released, stopping recording")
 
-        capture = self._recorder.stop()
+        try:
+            capture = self._recorder.stop()
+        except Exception as e:
+            logger.error("Recording stop failed: %s", e)
+            self._notifier.output_failed("录音停止失败")
+            return
         held_seconds = max(time.monotonic() - self._key_down_at, 0.0)
         audio_data = capture.get("normalized_audio", b"")
         sample_rate = int(capture.get("sample_rate", self._recorder.sample_rate) or self._recorder.sample_rate or 1)
@@ -437,7 +446,8 @@ class VoiceClient:
         audio_level = capture.get("audio_level", self._recorder.audio_level(capture))
         quality_state = str(audio_level.get("quality_state") or "")
         logger.info(
-            "Recording level: rms=%s peak=%s signal=%s quality=%s sample_rate=%s host_api=%s capture_channels=%s normalized_channels=%s strategy=%s volume_policy=%s gain_ratio=%s gain_db=%s auto_gain=%s preferred=%s:%s held=%ss recorded=%ss ratio=%s",
+            "Recording level: backend=%s rms=%s peak=%s signal=%s quality=%s sample_rate=%s host_api=%s capture_channels=%s normalized_channels=%s strategy=%s volume_policy=%s gain_ratio=%s gain_db=%s auto_gain=%s preferred=%s:%s held=%ss recorded=%ss ratio=%s",
+            capture.get("capture_backend", "pyaudio_wasapi"),
             audio_level.get("rms_ratio"),
             audio_level.get("peak_ratio"),
             audio_level.get("has_signal"),
@@ -483,6 +493,7 @@ class VoiceClient:
             "transcript_path": transcript_path,
             "sample_rate": capture.get("sample_rate", self._recorder.sample_rate),
             "audio_level": audio_level,
+            "capture_backend": capture.get("capture_backend", "pyaudio_wasapi"),
             "capture_host_api": capture.get("host_api", self._recorder.host_api),
             "capture_channels": capture.get("capture_channels", self._recorder.capture_channels),
             "normalized_channels": capture.get("normalized_channels", self._recorder.normalized_channels),
@@ -498,6 +509,8 @@ class VoiceClient:
             "gain_db": capture.get("gain_db", 0.0),
             "volume_policy": capture.get("volume_policy", "passthrough_no_gain"),
             "auto_gain_enabled": capture.get("auto_gain_enabled", False),
+            "windows_voice_capture_enabled": self._config.windows_voice_capture_enabled,
+            "windows_voice_capture": capture.get("windows_voice_capture", {}),
             "device_name": capture.get("device_name", ""),
             "held_seconds": capture.get("held_seconds", 0),
             "recorded_duration_seconds": capture.get("recorded_duration_seconds", 0),
@@ -575,6 +588,7 @@ class VoiceClient:
                 "output_mode": self._config.output_mode,
                 "sample_rate": item.get("sample_rate", self._config.sample_rate),
                 "audio_level": item.get("audio_level", {}),
+                "capture_backend": item.get("capture_backend", ""),
                 "capture_host_api": item.get("capture_host_api", ""),
                 "capture_channels": item.get("capture_channels", 1),
                 "normalized_channels": item.get("normalized_channels", 1),
@@ -590,6 +604,8 @@ class VoiceClient:
                 "gain_db": item.get("gain_db", 0.0),
                 "volume_policy": item.get("volume_policy", "passthrough_no_gain"),
                 "auto_gain_enabled": item.get("auto_gain_enabled", False),
+                "windows_voice_capture_enabled": item.get("windows_voice_capture_enabled", False),
+                "windows_voice_capture": item.get("windows_voice_capture", {}),
                 "device_name": item.get("device_name", ""),
                 "held_seconds": item.get("held_seconds", 0),
                 "recorded_duration_seconds": item.get("recorded_duration_seconds", 0),
@@ -690,6 +706,10 @@ def main():
             config.input_device_sample_rate = int(arg.split("=", 1)[1])
         elif arg.startswith("--min-press-seconds="):
             config.min_press_seconds = float(arg.split("=", 1)[1])
+        elif arg == "--windows-voice-capture":
+            config.windows_voice_capture_enabled = True
+        elif arg == "--no-windows-voice-capture":
+            config.windows_voice_capture_enabled = False
         elif arg == "--auto-gain":
             config.auto_gain_enabled = True
         elif arg == "--no-auto-gain":

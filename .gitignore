@@ -29,6 +29,7 @@ data/archive/
 data/transcription_uploads/
 data/transcription_validation/
 data/mic_format_tests/
+data/dotnet_home/
 *.weba
 data/*.json
 data/*.jsonl
@@ -37,6 +38,8 @@ data/*.db
 # Models and large local assets
 models/
 tools/ffmpeg/
+tools/windows_voice_capture/bin/
+tools/windows_voice_capture/obj/
 *.onnx
 *.gguf
 *.safetensors

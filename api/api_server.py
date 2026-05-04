@@ -1,4 +1,5 @@
 import asyncio
+import argparse
 import base64
 import glob
 import json
@@ -7,6 +8,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -26,6 +28,7 @@ from common.audio_devices import (
     device_matches_selection,
     input_device_recommendation,
 )
+from common.audio_levels import quality_message
 from common.history import HistoryManager
 from common.hotword import HotwordManager
 from common.logger import setup_logger
@@ -40,6 +43,7 @@ from config.settings import (
     APP_CONFIG_FILE,
     BASE_DIR,
     ClientConfig,
+    DATA_DIR,
     DEFAULT_API_PORT,
     DEFAULT_ASR_PORT,
     DEFAULT_FRONTEND_PORT,
@@ -147,6 +151,13 @@ class AudioScanRequest(BaseModel):
     waveform_points: int = 64
 
 
+class AudioFormatProbeRequest(BaseModel):
+    seconds: float = 5.0
+    device_index: Optional[int] = None
+    device_name: str = ""
+    run_asr: bool = True
+
+
 class ProcessManager:
     @staticmethod
     def _find_python() -> str:
@@ -226,6 +237,7 @@ class ProcessManager:
             f"--input-device-sample-rate={config.input_device_sample_rate}",
             f"--min-press-seconds={config.min_press_seconds}",
         ]
+        args.append("--windows-voice-capture" if config.windows_voice_capture_enabled else "--no-windows-voice-capture")
         args.append("--auto-gain" if config.auto_gain_enabled else "--no-auto-gain")
         args.append("--save-audio" if config.save_audio else "--no-save-audio")
         args.append("--notify" if config.notification_enabled else "--no-notify")
@@ -1059,14 +1071,80 @@ async def get_audio_input_devices():
 
 
 def _record_audio_test(device_index: int, seconds: float) -> dict:
+    config = load_app_config().client
+    seconds = max(0.5, min(float(seconds or 3.0), 5.0))
+    if config.windows_voice_capture_enabled:
+        device_name = config.input_device_name
+        try:
+            import pyaudio
+
+            audio = pyaudio.PyAudio()
+            try:
+                devices = _pyaudio_input_devices(audio)
+                if device_index >= 0:
+                    selected = next((device for device in devices if int(device.get("index", -1)) == device_index), None)
+                    if selected:
+                        device_name = str(selected.get("name") or device_name)
+            finally:
+                audio.terminate()
+        except Exception:
+            pass
+        try:
+            probe = _run_windows_voice_probe(AudioFormatProbeRequest(
+                seconds=seconds,
+                device_index=device_index,
+                device_name=device_name,
+                run_asr=False,
+            ))
+            from scripts.mic_format_probe import read_wav_pcm
+
+            normalized_audio, sample_rate, channels = read_wav_pcm(Path(str(probe["file"]["path"])))
+            level = dict(probe["file"].get("audio_level") or {})
+            helper = probe.get("helper") if isinstance(probe.get("helper"), dict) else {}
+            helper_device = helper.get("device") if isinstance(helper.get("device"), dict) else {}
+            wav_data = Path(str(probe["file"]["path"])).read_bytes()
+            return {
+                "ok": True,
+                "message": quality_message(level),
+                "has_signal": bool(level.get("has_signal")),
+                "capture_backend": "windows_mediacapture",
+                "device_index": device_index,
+                "device_name": str(helper_device.get("name") or device_name or ""),
+                "host_api": "Windows MediaCapture",
+                "capture_host_api": "Windows MediaCapture",
+                "sample_rate": sample_rate,
+                "seconds": seconds,
+                "capture_channels": channels,
+                "normalized_channels": channels,
+                "normalized_strategy": "windows_mediacapture",
+                "normalized_channel_index": 0,
+                "channel_analysis": [],
+                "stereo_correlation": None,
+                "source_audio_level": level,
+                "processed_audio_level": level,
+                "input_output_gain_ratio": 1.0,
+                "gain_db": 0.0,
+                "volume_policy": "windows_mediacapture_default_processing",
+                "auto_gain_enabled": False,
+                "windows_voice_capture_enabled": True,
+                "windows_voice_capture": {
+                    "media_category": probe.get("recording", {}).get("media_category", "VoiceTyping"),
+                    "audio_processing": probe.get("recording", {}).get("audio_processing", "Default"),
+                },
+                "quality_state": level.get("quality_state"),
+                "audio_wav_base64": base64.b64encode(wav_data).decode("ascii"),
+                "normalized_audio": normalized_audio,
+                **level,
+            }
+        except Exception as exc:
+            logger.warning("Windows voice capture test failed, falling back to PyAudio/WASAPI: %s", exc)
+
     try:
         import pyaudio
     except Exception as exc:
         return {"ok": False, "message": f"PyAudio unavailable: {exc}", "has_signal": False}
 
-    config = load_app_config().client
     audio = pyaudio.PyAudio()
-    seconds = max(0.5, min(float(seconds or 3.0), 5.0))
     try:
         if device_index < 0:
             devices = _pyaudio_input_devices(audio)
@@ -1093,6 +1171,7 @@ def _record_audio_test(device_index: int, seconds: float) -> dict:
             "ok": True,
             "message": capture["message"],
             "has_signal": level["has_signal"],
+            "capture_backend": "pyaudio_wasapi",
             "device_index": capture.get("device_index"),
             "device_name": capture.get("device_name", ""),
             "host_api": capture.get("host_api", ""),
@@ -1184,6 +1263,393 @@ async def test_audio_input(req: AudioTestRequest):
                 "recognized_text": recognition.get("text", ""),
             }, reason="api_test_input")
     return result
+
+
+def _safe_probe_output_path(run_id: str, filename: str) -> Path:
+    if not run_id or "/" in run_id or "\\" in run_id or ".." in run_id:
+        raise HTTPException(status_code=400, detail="Invalid probe id")
+    clean_name = Path(filename).name
+    if clean_name != filename or not clean_name.lower().endswith(".wav"):
+        raise HTTPException(status_code=400, detail="Invalid probe file")
+    from scripts.mic_format_probe import OUTPUT_ROOT
+
+    root = OUTPUT_ROOT.resolve()
+    target = (root / run_id / clean_name).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid probe path")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Probe audio not found")
+    return target
+
+
+def _probe_file_url(run_id: str, path: Path) -> str:
+    return f"/api/audio/format-probe/{run_id}/{path.name}"
+
+
+def _run_audio_format_probe_recording(req: AudioFormatProbeRequest) -> dict:
+    from scripts.mic_format_probe import OUTPUT_ROOT, audio_metrics, build_outputs, record_raw, select_device
+
+    seconds = max(0.5, min(float(req.seconds or 5.0), 20.0))
+    run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    output_dir = OUTPUT_ROOT / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    args = argparse.Namespace(
+        seconds=seconds,
+        device_index=int(req.device_index) if req.device_index is not None and int(req.device_index) >= 0 else None,
+        device_name=req.device_name or "",
+        output_dir=str(output_dir),
+        no_asr=not req.run_asr,
+    )
+    device_index, device_info = select_device(args)
+    raw_audio, sample_rate, channels = record_raw(device_index, device_info, seconds)
+    outputs = build_outputs(raw_audio, sample_rate, channels, output_dir)
+    files = {}
+    for key, path in outputs.items():
+        row = audio_metrics(path)
+        row["filename"] = path.name
+        row["url"] = _probe_file_url(run_id, path)
+        files[key] = row
+
+    server_config = load_app_config().server
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "output_dir": str(output_dir),
+        "device": {
+            "index": device_index,
+            "name": str(device_info.get("name") or ""),
+            "host_api": str(device_info.get("host_api") or ""),
+            "default_sample_rate": int(float(device_info.get("defaultSampleRate", 0) or 0)),
+            "max_input_channels": int(device_info.get("maxInputChannels", 0) or 0),
+        },
+        "recording": {
+            "requested_seconds": seconds,
+            "sample_rate": sample_rate,
+            "channels": channels,
+            "format": "PCM16/int16",
+            "auto_gain": False,
+            "noise_reduction": False,
+            "compression": False,
+        },
+        "files": files,
+        "asr": {
+            "model": server_config.model,
+            "service": f"ws://127.0.0.1:{server_config.port}",
+            "results": {},
+            "skipped": not req.run_asr,
+        },
+    }
+
+
+async def _recognize_probe_files(result: dict) -> dict:
+    from scripts.mic_format_probe import read_wav_pcm
+
+    if result.get("asr", {}).get("skipped"):
+        candidates = {
+            key: value
+            for key, value in result.get("files", {}).items()
+            if key.startswith("minimal_channel") or key == "standard_asr_16k_mono"
+        }
+        result["asr"]["results"] = {
+            key: {"skipped": True, "reason": "用户关闭了 ASR 测试"}
+            for key in candidates
+        }
+        return result
+
+    asr_results = {}
+    for key, file_info in result.get("files", {}).items():
+        if not (key.startswith("minimal_channel") or key == "standard_asr_16k_mono"):
+            continue
+        path = Path(str(file_info.get("path") or ""))
+        audio_data, sample_rate, _channels = read_wav_pcm(path)
+        started = time.time()
+        recognition = await _recognize_audio_preview(audio_data, sample_rate)
+        asr_results[key] = {
+            "text": recognition.get("text", ""),
+            "seconds": round(time.time() - started, 3),
+            "sample_rate": sample_rate,
+            "ok": recognition.get("ok", False),
+            "error": recognition.get("error", ""),
+            "model": recognition.get("model", ""),
+        }
+    result["asr"]["results"] = asr_results
+    return result
+
+
+def _write_probe_result_json(result: dict) -> None:
+    output_dir = Path(str(result.get("output_dir") or ""))
+    if not output_dir:
+        return
+    result_path = output_dir / "result.json"
+    result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _safe_browser_probe_label(value: str, fallback: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(value or "").strip())
+    cleaned = cleaned.strip("_")
+    return cleaned[:40] or fallback
+
+
+def _convert_browser_probe_upload(content: bytes, filename: str, label: str, processing: str) -> dict:
+    from scripts.mic_format_probe import OUTPUT_ROOT, audio_metrics
+
+    status = ffmpeg_status()
+    ffmpeg = status.get("ffmpeg") or ""
+    if not ffmpeg:
+        raise RuntimeError(status.get("message") or "ffmpeg is not available")
+
+    safe_label = _safe_browser_probe_label(label, "browser")
+    safe_processing = _safe_browser_probe_label(processing, "unknown")
+    run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    output_dir = OUTPUT_ROOT / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    source_name = f"{safe_label}_{safe_processing}.webm"
+    source_path = output_dir / source_name
+    wav_path = output_dir / f"{safe_label}_{safe_processing}_16k_mono.wav"
+    source_path.write_bytes(content)
+
+    command = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source_path),
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-sample_fmt",
+        "s16",
+        str(wav_path),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or completed.stdout or "ffmpeg conversion failed").strip())
+
+    metrics = audio_metrics(wav_path)
+    metrics["filename"] = wav_path.name
+    metrics["url"] = _probe_file_url(run_id, wav_path)
+    result = {
+        "ok": True,
+        "run_id": run_id,
+        "output_dir": str(output_dir),
+        "source": {
+            "filename": filename,
+            "stored_filename": source_name,
+            "label": safe_label,
+            "processing": safe_processing,
+            "bytes": len(content),
+        },
+        "file": metrics,
+        "asr": {
+            "model": load_app_config().server.model,
+            "results": {},
+        },
+    }
+    return result
+
+
+def _run_windows_voice_probe(req: AudioFormatProbeRequest) -> dict:
+    from scripts.mic_format_probe import OUTPUT_ROOT, audio_metrics
+
+    def repair_windows_text(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: repair_windows_text(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [repair_windows_text(item) for item in value]
+        if not isinstance(value, str):
+            return value
+        if not any(marker in value for marker in ("é", "å", "è", "\x85", "\x8b", "\x8e")):
+            return value
+        try:
+            repaired = value.encode("latin-1").decode("utf-8")
+        except UnicodeError:
+            return value
+        original_cjk = sum(1 for char in value if "\u4e00" <= char <= "\u9fff")
+        repaired_cjk = sum(1 for char in repaired if "\u4e00" <= char <= "\u9fff")
+        return repaired if repaired_cjk > original_cjk else value
+
+    seconds = max(0.5, min(float(req.seconds or 5.0), 20.0))
+    run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    output_dir = OUTPUT_ROOT / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    wav_path = output_dir / "windows_voice_capture_16k_mono.wav"
+    helper_project = Path(BASE_DIR) / "tools" / "windows_voice_capture" / "VoiceCaptureHelper.csproj"
+    helper_dll = (
+        Path(BASE_DIR)
+        / "tools"
+        / "windows_voice_capture"
+        / "bin"
+        / "x64"
+        / "Release"
+        / "net10.0-windows10.0.26100.0"
+        / "VoiceCaptureHelper.dll"
+    )
+    if not helper_project.is_file():
+        raise RuntimeError(f"Windows voice capture helper is missing: {helper_project}")
+
+    config = load_app_config()
+    device_name = req.device_name or config.client.input_device_name
+    helper_args = [
+        "--seconds",
+        str(seconds),
+        "--output",
+        str(wav_path),
+        "--device-name",
+        device_name,
+        "--category",
+        "VoiceTyping",
+        "--processing",
+        "Default",
+    ]
+    if helper_dll.is_file():
+        command = ["dotnet", str(helper_dll), *helper_args]
+    else:
+        command = ["dotnet", "run", "--project", str(helper_project), "-c", "Release", "-p:Platform=x64", "--", *helper_args]
+    dotnet_home = Path(DATA_DIR) / "dotnet_home"
+    dotnet_home.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["DOTNET_CLI_HOME"] = str(dotnet_home)
+    env["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1"
+    env["DOTNET_NOLOGO"] = "1"
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=max(150, int(seconds) + 120),
+        cwd=BASE_DIR,
+        env=env,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or completed.stdout or "Windows voice capture helper failed").strip())
+    helper_info: dict[str, Any] = {}
+    for line in reversed((completed.stdout or "").splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            helper_info = repair_windows_text(json.loads(line))
+            break
+        except json.JSONDecodeError:
+            continue
+
+    metrics = audio_metrics(wav_path)
+    metrics["filename"] = wav_path.name
+    metrics["url"] = _probe_file_url(run_id, wav_path)
+    result = {
+        "ok": True,
+        "run_id": run_id,
+        "output_dir": str(output_dir),
+        "capture_backend": "windows_mediacapture",
+        "helper": helper_info,
+        "recording": {
+            "requested_seconds": seconds,
+            "sample_rate": 16000,
+            "channels": 1,
+            "format": "PCM16/int16",
+            "media_category": str(helper_info.get("media_category") or "VoiceTyping"),
+            "audio_processing": str(helper_info.get("audio_processing") or "Default"),
+        },
+        "file": metrics,
+        "asr": {
+            "model": config.server.model,
+            "results": {},
+        },
+    }
+    return result
+
+
+@app.post("/api/audio/windows-voice-probe")
+async def windows_voice_audio_probe(req: AudioFormatProbeRequest):
+    try:
+        result = await asyncio.to_thread(_run_windows_voice_probe, req)
+        from scripts.mic_format_probe import read_wav_pcm
+
+        wav_path = Path(str(result["file"]["path"]))
+        audio_data, sample_rate, _channels = await asyncio.to_thread(read_wav_pcm, wav_path)
+        started = time.time()
+        recognition = await _recognize_audio_preview(audio_data, sample_rate)
+        result["asr"]["results"] = {
+            "standard_asr_16k_mono": {
+                "text": recognition.get("text", ""),
+                "seconds": round(time.time() - started, 3),
+                "sample_rate": sample_rate,
+                "ok": recognition.get("ok", False),
+                "error": recognition.get("error", ""),
+                "model": recognition.get("model", ""),
+            }
+        }
+        await asyncio.to_thread(_write_probe_result_json, result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("windows voice audio probe failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/audio/browser-probe")
+async def browser_audio_probe(
+    file: UploadFile = File(...),
+    label: str = Form("browser"),
+    processing: str = Form("unknown"),
+):
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded audio is empty")
+    try:
+        result = await asyncio.to_thread(_convert_browser_probe_upload, content, file.filename or "recording.webm", label, processing)
+        from scripts.mic_format_probe import read_wav_pcm
+
+        wav_path = Path(str(result["file"]["path"]))
+        audio_data, sample_rate, _channels = await asyncio.to_thread(read_wav_pcm, wav_path)
+        started = time.time()
+        recognition = await _recognize_audio_preview(audio_data, sample_rate)
+        result["asr"]["results"] = {
+            "standard_asr_16k_mono": {
+                "text": recognition.get("text", ""),
+                "seconds": round(time.time() - started, 3),
+                "sample_rate": sample_rate,
+                "ok": recognition.get("ok", False),
+                "error": recognition.get("error", ""),
+                "model": recognition.get("model", ""),
+            }
+        }
+        await asyncio.to_thread(_write_probe_result_json, result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("browser audio probe failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/audio/format-probe")
+async def audio_format_probe(req: AudioFormatProbeRequest):
+    try:
+        result = await asyncio.to_thread(_run_audio_format_probe_recording, req)
+        result = await _recognize_probe_files(result)
+        await asyncio.to_thread(_write_probe_result_json, result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("audio format probe failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/audio/format-probe/{run_id}/{filename}")
+async def get_audio_format_probe_file(run_id: str, filename: str):
+    target = _safe_probe_output_path(run_id, filename)
+    return FileResponse(str(target), media_type="audio/wav", filename=target.name)
 
 
 def _capture_device_level(audio: Any, pyaudio_module: Any, device: dict, seconds: float, waveform_points: int) -> dict:

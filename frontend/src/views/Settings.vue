@@ -91,6 +91,13 @@
         </label>
         <label class="row setting-row">
           <span>
+            <span class="value">Windows 语音增强采集</span>
+            <span class="label">默认使用系统语音采集模式；失败时回退原录音方式</span>
+          </span>
+          <input v-model="store.config.client.windows_voice_capture_enabled" type="checkbox" />
+        </label>
+        <label class="row setting-row">
+          <span>
             <span class="value">保存录音</span>
             <span class="label">写入结构化归档目录</span>
           </span>
@@ -362,6 +369,7 @@ const audioTestLabel = computed(() => {
   const peak = Number(result.peak_ratio || 0)
   const device = result.device_name ? `${result.device_name} · ` : ''
   const profile = [
+    result.capture_backend === 'windows_mediacapture' ? 'Windows 语音增强' : '',
     result.capture_host_api || result.host_api || '',
     result.sample_rate ? `${result.sample_rate}Hz` : '',
     result.capture_channels ? `${result.capture_channels}ch` : '',
@@ -496,6 +504,7 @@ function deviceSignature() {
     store.config.client.input_device_name || '',
     store.config.client.input_device_host_api || '',
     Number(store.config.client.input_device_sample_rate || 0),
+    store.config.client.windows_voice_capture_enabled ? 'windows_voice' : 'pyaudio',
   ].join('|')
 }
 
