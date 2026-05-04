@@ -66,6 +66,7 @@ export interface ModelEntry {
   role?: string
   acceleration?: string
   download_url?: string
+  modelscope_id?: string
   blocking_reason?: string
   gpu_required_supported?: boolean
   recommended_for?: string[]
@@ -88,6 +89,19 @@ export interface ModelBenchmark {
   cuda_available?: boolean
   error?: string
   updated_at?: number
+}
+
+export interface ModelDownloadJob {
+  model: string
+  modelscope_id?: string
+  status: 'idle' | 'running' | 'done' | 'error' | 'installed'
+  target_dir?: string
+  log_path?: string
+  started_at?: number
+  finished_at?: number
+  returncode?: number | null
+  message?: string
+  error?: string
 }
 
 export interface HardwareInfo {
@@ -194,6 +208,7 @@ export interface AudioInputTestResult {
   channel_analysis?: Array<{
     strategy: string
     channel_index: number
+    selectable?: boolean
     audio_level: {
       rms_ratio?: number
       peak_ratio?: number
@@ -201,6 +216,9 @@ export interface AudioInputTestResult {
     }
   }>
   stereo_correlation?: number
+  source_audio_level?: Record<string, unknown>
+  input_output_gain_ratio?: number
+  volume_policy?: string
   quality_state?: string
   clipping_ratio?: number
   dc_offset_ratio?: number
@@ -232,6 +250,7 @@ export interface AudioLevelDevice extends AudioInputDevice {
   channel_analysis?: Array<{
     strategy: string
     channel_index: number
+    selectable?: boolean
     audio_level: {
       rms_ratio?: number
       peak_ratio?: number
@@ -239,6 +258,9 @@ export interface AudioLevelDevice extends AudioInputDevice {
     }
   }>
   stereo_correlation?: number
+  source_audio_level?: Record<string, unknown>
+  input_output_gain_ratio?: number
+  volume_policy?: string
   quality_state?: string
   clipping_ratio?: number
   dc_offset_ratio?: number
@@ -374,6 +396,7 @@ export const useAppStore = defineStore('app', () => {
   const topWords = ref<{ word: string; count: number }[]>([])
   const config = ref<AppConfig>(structuredClone(defaultConfig))
   const models = ref<ModelEntry[]>([])
+  const modelDownloads = ref<Record<string, ModelDownloadJob>>({})
   const hardware = ref<HardwareInfo | null>(null)
   const benchmarks = ref<Record<string, ModelBenchmark>>({})
   const benchmarkingModels = ref<string[]>([])
@@ -710,6 +733,34 @@ export const useAppStore = defineStore('app', () => {
 
   async function openModelFolder(model: string) {
     return apiFetch(`/models/${encodeURIComponent(model)}/open-folder`, { method: 'POST' })
+  }
+
+  async function startModelScopeDownload(model: string) {
+    const data = await apiFetch<ModelDownloadJob>(`/models/${encodeURIComponent(model)}/download-modelscope`, { method: 'POST' })
+    if (data) modelDownloads.value[model] = data
+    return data
+  }
+
+  async function fetchModelScopeDownload(model: string) {
+    const data = await apiFetch<ModelDownloadJob>(`/models/${encodeURIComponent(model)}/download-modelscope`)
+    if (data) modelDownloads.value[model] = data
+    return data
+  }
+
+  async function openHistoryAudioRoot() {
+    return apiFetch('/history/open-audio-root', { method: 'POST' })
+  }
+
+  async function openHistoryResultRoot() {
+    return apiFetch('/history/open-result-root', { method: 'POST' })
+  }
+
+  async function openHistoryAudioFolder(taskId: string) {
+    return apiFetch(`/history/${encodeURIComponent(taskId)}/open-audio-folder`, { method: 'POST' })
+  }
+
+  async function openHistoryResultFolder(taskId: string) {
+    return apiFetch(`/history/${encodeURIComponent(taskId)}/open-result-folder`, { method: 'POST' })
   }
 
   async function applyAccelerationRecommendation() {
@@ -1105,17 +1156,18 @@ export const useAppStore = defineStore('app', () => {
     serverRunning, clientRunning, serverPid, clientPid, serverManaged, clientManaged,
     serverPortOpen, serverConflict, clientConflict, serverProcessCount, clientProcessCount,
     history, errorMarks, wsConnected, currentPartial, topWords,
-    config, models, logs, recentIssues, hotwordContent, selectedHotword, toastMessage,
+    config, models, modelDownloads, logs, recentIssues, hotwordContent, selectedHotword, toastMessage,
     ffmpeg, llmConfig, transcriptions, audioInputDevices, audioInputTest, audioInputTesting, audioInputTestPhase, audioInputTestProgress, audioLevelScan, audioLevelScanning, playingTaskId, runtimeDiagnostics, runtimeRestarting, hardware, benchmarks, benchmarkingModels, lastError,
     apiBase: API_BASE,
     frontendSource: FRONTEND_SOURCE,
     appBuildLabel: APP_BUILD_LABEL,
     appBuildTime: APP_BUILD_TIME,
     latestEntry, totalEntries, avgDelay, serviceLabel, selectedModel, accelerationState, accelerationRecommendation,
-    fetchStatus, fetchHealth, fetchConfig, fetchAudioInputDevices, testAudioInput, scanAudioLevels, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, applyAccelerationRecommendation,
+    fetchStatus, fetchHealth, fetchConfig, fetchAudioInputDevices, testAudioInput, scanAudioLevels, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, startModelScopeDownload, fetchModelScopeDownload, applyAccelerationRecommendation,
     startServer, stopServer, startClient, stopClient, restartClient, startAll, stopAll,
     fetchRuntimeDiagnostics, restartRuntime, suppressConnectionErrors,
     fetchHistory, clearHistory, deleteHistoryEntry, addErrorMark, fetchErrorMarks,
+    openHistoryAudioRoot, openHistoryResultRoot, openHistoryAudioFolder, openHistoryResultFolder,
     fetchStats, fetchLogs, fetchHotword, saveHotword,
     fetchFfmpegStatus, fetchLlmConfig, saveLlmConfig,
     fetchTranscriptions, createTranscription, uploadTranscription, cancelTranscription,

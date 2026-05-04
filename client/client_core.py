@@ -433,7 +433,7 @@ class VoiceClient:
         audio_level = capture.get("audio_level", self._recorder.audio_level(capture))
         quality_state = str(audio_level.get("quality_state") or "")
         logger.info(
-            "Recording level: rms=%s peak=%s signal=%s quality=%s sample_rate=%s host_api=%s capture_channels=%s normalized_channels=%s strategy=%s preferred=%s:%s held=%ss recorded=%ss ratio=%s",
+            "Recording level: rms=%s peak=%s signal=%s quality=%s sample_rate=%s host_api=%s capture_channels=%s normalized_channels=%s strategy=%s volume_policy=%s gain_ratio=%s preferred=%s:%s held=%ss recorded=%ss ratio=%s",
             audio_level.get("rms_ratio"),
             audio_level.get("peak_ratio"),
             audio_level.get("has_signal"),
@@ -443,6 +443,8 @@ class VoiceClient:
             capture.get("capture_channels", self._recorder.capture_channels),
             capture.get("normalized_channels", self._recorder.normalized_channels),
             capture.get("normalized_strategy", "mono"),
+            capture.get("volume_policy", "passthrough_no_gain"),
+            capture.get("input_output_gain_ratio", 1.0),
             capture.get("preferred_normalized_strategy", ""),
             capture.get("preferred_normalized_channel_index", -1),
             capture["held_seconds"],
@@ -484,6 +486,9 @@ class VoiceClient:
             "preferred_normalized_channel_index": capture.get("preferred_normalized_channel_index", -1),
             "channel_analysis": capture.get("channel_analysis", []),
             "stereo_correlation": capture.get("stereo_correlation"),
+            "source_audio_level": capture.get("source_audio_level", {}),
+            "input_output_gain_ratio": capture.get("input_output_gain_ratio", 1.0),
+            "volume_policy": capture.get("volume_policy", "passthrough_no_gain"),
             "device_name": capture.get("device_name", ""),
             "held_seconds": capture.get("held_seconds", 0),
             "recorded_duration_seconds": capture.get("recorded_duration_seconds", 0),
@@ -570,6 +575,9 @@ class VoiceClient:
                 "preferred_normalized_channel_index": item.get("preferred_normalized_channel_index", -1),
                 "channel_analysis": item.get("channel_analysis", []),
                 "stereo_correlation": item.get("stereo_correlation"),
+                "source_audio_level": item.get("source_audio_level", {}),
+                "input_output_gain_ratio": item.get("input_output_gain_ratio", 1.0),
+                "volume_policy": item.get("volume_policy", "passthrough_no_gain"),
                 "device_name": item.get("device_name", ""),
                 "held_seconds": item.get("held_seconds", 0),
                 "recorded_duration_seconds": item.get("recorded_duration_seconds", 0),

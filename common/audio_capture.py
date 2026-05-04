@@ -337,8 +337,16 @@ def _candidate_rank(candidate: dict[str, Any], remembered: dict[str, Any] | None
     if strategy.startswith("channel_"):
         score += 20.0
     if strategy == "average":
-        score += 10.0
+        score -= 2000.0
     return score
+
+
+def _level_ratio(output_level: dict[str, Any], source_level: dict[str, Any]) -> float:
+    source_peak = float(source_level.get("peak_ratio") or 0.0)
+    output_peak = float(output_level.get("peak_ratio") or 0.0)
+    if source_peak <= 0:
+        return 1.0 if output_peak <= 0 else 0.0
+    return round(output_peak / source_peak, 6)
 
 
 def normalize_capture_audio(
@@ -355,11 +363,15 @@ def normalize_capture_audio(
             "normalized_strategy": "mono",
             "normalized_channel_index": 0 if audio_data else -1,
             "audio_level": level,
+            "source_audio_level": level,
+            "input_output_gain_ratio": 1.0,
+            "volume_policy": "passthrough_no_gain",
             "channel_analysis": [
                 {
                     "strategy": "mono",
                     "channel_index": 0 if audio_data else -1,
                     "audio_level": level,
+                    "selectable": True,
                 }
             ],
             "stereo_correlation": 1.0,
@@ -377,28 +389,37 @@ def normalize_capture_audio(
             "normalized_strategy": f"channel_{channel_index}",
             "normalized_channel_index": channel_index,
             "audio_level": measure_pcm16_level(mono),
+            "source_audio_level": measure_pcm16_level(mono),
+            "selectable": True,
         })
     average_audio = _average_pcm16(audio_data, capture_channels)
-    candidates.append({
+    average_candidate = {
         "normalized_audio": average_audio,
         "normalized_strategy": "average",
         "normalized_channel_index": -1,
         "audio_level": measure_pcm16_level(average_audio),
-    })
+        "source_audio_level": measure_pcm16_level(average_audio),
+        "selectable": False,
+    }
     best = max(candidates, key=lambda item: _candidate_rank(item, remembered))
+    source_level = best.get("source_audio_level") or best["audio_level"]
     return {
         "normalized_audio": best["normalized_audio"],
         "normalized_channels": 1,
         "normalized_strategy": best["normalized_strategy"],
         "normalized_channel_index": best["normalized_channel_index"],
         "audio_level": best["audio_level"],
+        "source_audio_level": source_level,
+        "input_output_gain_ratio": _level_ratio(best["audio_level"], source_level),
+        "volume_policy": "passthrough_no_gain",
         "channel_analysis": [
             {
                 "strategy": item["normalized_strategy"],
                 "channel_index": item["normalized_channel_index"],
                 "audio_level": item["audio_level"],
+                "selectable": bool(item.get("selectable", True)),
             }
-            for item in candidates
+            for item in [*candidates, average_candidate]
         ],
         "stereo_correlation": round(_channel_correlation(audio_data, capture_channels), 6),
     }
@@ -565,6 +586,9 @@ def capture_input_once(
             "normalized_channel_index": normalized["normalized_channel_index"],
             "channel_analysis": normalized["channel_analysis"],
             "stereo_correlation": normalized["stereo_correlation"],
+            "source_audio_level": normalized.get("source_audio_level") or audio_level,
+            "input_output_gain_ratio": normalized.get("input_output_gain_ratio", 1.0),
+            "volume_policy": normalized.get("volume_policy", "passthrough_no_gain"),
             "audio_level": audio_level,
             "quality_state": str(audio_level.get("quality_state") or ""),
             "message": message,

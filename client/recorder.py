@@ -205,6 +205,9 @@ class AudioRecorder:
             "preferred_normalized_channel_index": self._preferred_normalized_channel_index,
             "channel_analysis": normalized.get("channel_analysis") or [],
             "stereo_correlation": normalized.get("stereo_correlation"),
+            "source_audio_level": normalized.get("source_audio_level") or level,
+            "input_output_gain_ratio": normalized.get("input_output_gain_ratio", 1.0),
+            "volume_policy": normalized.get("volume_policy", "passthrough_no_gain"),
             "device_index": self._active_device_index,
             "device_name": self._active_device_name,
             "host_api": self._active_host_api,
@@ -213,7 +216,7 @@ class AudioRecorder:
         }
         self._last_capture = capture
         logger.info(
-            "Recording stopped, raw=%s bytes normalized=%s bytes rms=%s peak=%s signal=%s quality=%s strategy=%s preferred=%s:%s",
+            "Recording stopped, raw=%s bytes normalized=%s bytes rms=%s peak=%s signal=%s quality=%s strategy=%s volume_policy=%s gain_ratio=%s preferred=%s:%s",
             len(raw_audio),
             len(normalized_audio),
             level["rms_ratio"],
@@ -221,6 +224,8 @@ class AudioRecorder:
             level["has_signal"],
             level.get("quality_state"),
             self._normalized_strategy,
+            capture["volume_policy"],
+            capture["input_output_gain_ratio"],
             self._preferred_normalized_strategy or "-",
             self._preferred_normalized_channel_index,
         )

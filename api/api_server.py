@@ -79,11 +79,18 @@ MODEL_DOWNLOAD_URLS = {
     "paraformer": "https://github.com/k2-fsa/sherpa-onnx/releases",
 }
 
+MODEL_MODELSCOPE_IDS = {
+    "qwen3-asr-0.6b": "Qwen/Qwen3-ASR-0.6B",
+    "qwen3-asr-1.7b": "Qwen/Qwen3-ASR-1.7B",
+    "qwen3-asr-1.7b-gguf-vulkan": "Qwen/Qwen3-ASR-1.7B-GGUF",
+}
+
 history = HistoryManager()
 transcriptions = TranscriptionManager()
 server_process: Optional[subprocess.Popen] = None
 client_process: Optional[subprocess.Popen] = None
 _PROCESS_CACHE = {"time": 0.0, "rows": []}
+model_download_jobs: dict[str, dict] = {}
 
 
 class ErrorMarkRequest(BaseModel):
@@ -525,6 +532,7 @@ def _model_entries() -> list:
             "role": role,
             "acceleration": _default_acceleration_for_model(model),
             "download_url": MODEL_DOWNLOAD_URLS.get(model, ""),
+            "modelscope_id": MODEL_MODELSCOPE_IDS.get(model, ""),
             "gpu_required_supported": not bool(blocking_reason),
             "blocking_reason": blocking_reason,
             "recommended_for": recommendation.get("recommended_for", {}).get(model, []),
@@ -532,6 +540,105 @@ def _model_entries() -> list:
             "benchmarks": model_benchmarks,
         })
     return entries
+
+
+def _safe_model_target(model_id: str) -> Path:
+    if model_id not in MODEL_DIR_NAMES:
+        raise HTTPException(status_code=404, detail="Unknown model")
+    target = Path(resolve_model_dir(model_id)).resolve()
+    allowed_roots = [Path(root).resolve() for root in model_root_candidates()]
+    if not any(target == root or root in target.parents for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="Model path is outside known model roots")
+    return target
+
+
+def _public_model_download_job(job: dict) -> dict:
+    return {
+        "model": job.get("model", ""),
+        "modelscope_id": job.get("modelscope_id", ""),
+        "status": job.get("status", "idle"),
+        "target_dir": job.get("target_dir", ""),
+        "log_path": job.get("log_path", ""),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "returncode": job.get("returncode"),
+        "message": job.get("message", ""),
+        "error": job.get("error", ""),
+    }
+
+
+def _run_modelscope_download(model_id: str, job: dict):
+    target_dir = Path(job["target_dir"])
+    log_path = Path(job["log_path"])
+    try:
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        code = (
+            "import sys\n"
+            "from modelscope import snapshot_download\n"
+            "snapshot_download(sys.argv[1], local_dir=sys.argv[2])\n"
+        )
+        job["message"] = "正在从 ModelScope 下载模型"
+        with open(log_path, "w", encoding="utf-8", errors="replace") as log_file:
+            probe = subprocess.run(
+                [sys.executable, "-c", "import modelscope"],
+                cwd=BASE_DIR,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+            if probe.returncode != 0:
+                job["message"] = "正在安装 ModelScope SDK"
+                install_command = [sys.executable, "-m", "pip", "install", "modelscope"]
+                log_file.write(f"Install command: {install_command}\n")
+                log_file.flush()
+                install = subprocess.run(
+                    install_command,
+                    cwd=BASE_DIR,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                )
+                if install.returncode != 0:
+                    job["returncode"] = install.returncode
+                    job["status"] = "error"
+                    job["finished_at"] = time.time()
+                    job["error"] = "ModelScope SDK 安装失败，请查看下载日志"
+                    return
+
+            job["message"] = "正在从 ModelScope 下载模型"
+            command = [sys.executable, "-c", code, job["modelscope_id"], str(target_dir)]
+            log_file.write(f"Command: {command}\n")
+            log_file.flush()
+            process = subprocess.Popen(
+                command,
+                cwd=BASE_DIR,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+            job["pid"] = process.pid
+            returncode = process.wait()
+        job["returncode"] = returncode
+        job["finished_at"] = time.time()
+        if returncode == 0 and target_dir.exists() and any(target_dir.iterdir()):
+            job["status"] = "done"
+            job["message"] = "下载完成"
+        else:
+            job["status"] = "error"
+            if returncode != 0:
+                job["error"] = (
+                    "ModelScope 下载失败。若日志提示 No module named 'modelscope'，"
+                    f"请先运行：{sys.executable} -m pip install modelscope"
+                )
+            else:
+                job["error"] = "ModelScope 下载结束，但目标目录仍为空"
+    except Exception as exc:
+        job["status"] = "error"
+        job["finished_at"] = time.time()
+        job["error"] = str(exc)
 
 
 def _benchmark_path() -> str:
@@ -995,6 +1102,9 @@ def _record_audio_test(device_index: int, seconds: float) -> dict:
             "normalized_channel_index": capture.get("normalized_channel_index"),
             "channel_analysis": capture.get("channel_analysis", []),
             "stereo_correlation": capture.get("stereo_correlation"),
+            "source_audio_level": capture.get("source_audio_level", {}),
+            "input_output_gain_ratio": capture.get("input_output_gain_ratio", 1.0),
+            "volume_policy": capture.get("volume_policy", "passthrough_no_gain"),
             "quality_state": capture.get("quality_state"),
             "audio_wav_base64": base64.b64encode(wav_data).decode("ascii"),
             "normalized_audio": capture.get("normalized_audio", b""),
@@ -1096,6 +1206,9 @@ def _capture_device_level(audio: Any, pyaudio_module: Any, device: dict, seconds
             "normalized_channel_index": capture.get("normalized_channel_index"),
             "channel_analysis": capture.get("channel_analysis", []),
             "stereo_correlation": capture.get("stereo_correlation"),
+            "source_audio_level": capture.get("source_audio_level", {}),
+            "input_output_gain_ratio": capture.get("input_output_gain_ratio", 1.0),
+            "volume_policy": capture.get("volume_policy", "passthrough_no_gain"),
             "quality_state": capture.get("quality_state", ""),
             "waveform": capture.get("waveform") or [],
         }
@@ -1169,16 +1282,68 @@ async def get_models():
     }
 
 
-@app.post("/api/models/{model_id}/open-folder")
-async def open_model_folder(model_id: str):
+@app.get("/api/models/{model_id}/download-modelscope")
+async def get_modelscope_download(model_id: str):
     if model_id not in MODEL_DIR_NAMES:
         raise HTTPException(status_code=404, detail="Unknown model")
-    model_path = Path(resolve_model_dir(model_id))
+    job = model_download_jobs.get(model_id)
+    if job:
+        return _public_model_download_job(job)
+    target = _safe_model_target(model_id)
+    return {
+        "model": model_id,
+        "modelscope_id": MODEL_MODELSCOPE_IDS.get(model_id, ""),
+        "status": "installed" if target.exists() else "idle",
+        "target_dir": str(target),
+        "log_path": "",
+        "message": "已安装" if target.exists() else "",
+        "error": "",
+    }
+
+
+@app.post("/api/models/{model_id}/download-modelscope")
+async def start_modelscope_download(model_id: str):
+    if model_id not in MODEL_DIR_NAMES:
+        raise HTTPException(status_code=404, detail="Unknown model")
+    modelscope_id = MODEL_MODELSCOPE_IDS.get(model_id, "")
+    if not modelscope_id:
+        raise HTTPException(status_code=400, detail="This model has no ModelScope download mapping")
+
+    existing = model_download_jobs.get(model_id)
+    if existing and existing.get("status") == "running":
+        return _public_model_download_job(existing)
+
+    target = _safe_model_target(model_id)
+    if target.exists() and any(target.iterdir()):
+        job = {
+            "model": model_id,
+            "modelscope_id": modelscope_id,
+            "status": "installed",
+            "target_dir": str(target),
+            "message": "模型目录已存在",
+        }
+        model_download_jobs[model_id] = job
+        return _public_model_download_job(job)
+
+    job = {
+        "model": model_id,
+        "modelscope_id": modelscope_id,
+        "status": "running",
+        "target_dir": str(target),
+        "log_path": str(Path(LOGS_DIR, f"model_download_{model_id}.log")),
+        "started_at": time.time(),
+        "message": "下载任务已启动",
+        "error": "",
+    }
+    model_download_jobs[model_id] = job
+    asyncio.create_task(asyncio.to_thread(_run_modelscope_download, model_id, job))
+    return _public_model_download_job(job)
+
+
+@app.post("/api/models/{model_id}/open-folder")
+async def open_model_folder(model_id: str):
+    model_path = _safe_model_target(model_id)
     target = model_path if model_path.exists() else model_path.parent
-    target = target.resolve()
-    allowed_roots = [Path(root).resolve() for root in model_root_candidates()]
-    if not any(target == root or root in target.parents for root in allowed_roots):
-        raise HTTPException(status_code=403, detail="Model path is outside known model roots")
     target.mkdir(parents=True, exist_ok=True)
     try:
         if sys.platform == "win32":
@@ -1257,6 +1422,40 @@ def _decode_audio_for_benchmark(path: str) -> tuple[bytes, int]:
         cwd=BASE_DIR,
     )
     return audio, sample_rate
+
+
+def _safe_history_path(path_value: str, expect_file: bool = False) -> Path:
+    target = Path(path_value or "")
+    if not path_value:
+        raise HTTPException(status_code=404, detail="Path is empty")
+    if expect_file and (not target.exists() or not target.is_file()):
+        raise HTTPException(status_code=404, detail="History file not found")
+    if not expect_file and (not target.exists() or not target.is_dir()):
+        raise HTTPException(status_code=404, detail="History folder not found")
+
+    config = load_app_config().client
+    allowed_roots = [
+        Path(path).resolve()
+        for path in (config.archive_root, config.audio_dir, str(Path(BASE_DIR, "data")))
+        if path
+    ]
+    resolved = target.resolve()
+    if not any(resolved == root or root in resolved.parents for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="Path is outside VoiceType data directories")
+    return resolved
+
+
+def _open_path_in_shell(target: Path):
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(target))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target)])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to open path: {exc}") from exc
+    return {"status": "opened", "path": str(target)}
 
 
 def _run_model_benchmark(model: str, audio_file: str, persist: bool = True, acceleration: Optional[str] = None) -> dict:
@@ -1640,19 +1839,43 @@ async def get_history_audio(task_id: str):
     entry = next((item for item in entries if item.get("task_id") == task_id), None)
     if not entry:
         raise HTTPException(status_code=404, detail="History entry not found")
-    audio_path = Path(entry.get("audio_path") or "")
-    if not audio_path.exists() or not audio_path.is_file():
-        raise HTTPException(status_code=404, detail="Recording file not found")
-
-    allowed_roots = [
-        Path(load_app_config().client.archive_root).resolve(),
-        Path(load_app_config().client.audio_dir).resolve(),
-        Path(BASE_DIR, "data").resolve(),
-    ]
-    resolved = audio_path.resolve()
-    if not any(resolved == root or root in resolved.parents for root in allowed_roots):
-        raise HTTPException(status_code=403, detail="Recording path is outside VoiceType data directories")
+    resolved = _safe_history_path(entry.get("audio_path") or "", expect_file=True)
     return FileResponse(str(resolved), media_type="audio/wav", filename=resolved.name)
+
+
+@app.post("/api/history/open-audio-root")
+async def open_history_audio_root():
+    root = _safe_history_path(load_app_config().client.archive_root)
+    return _open_path_in_shell(root)
+
+
+@app.post("/api/history/open-result-root")
+async def open_history_result_root():
+    root = _safe_history_path(load_app_config().client.archive_root)
+    return _open_path_in_shell(root)
+
+
+@app.post("/api/history/{task_id}/open-audio-folder")
+async def open_history_audio_folder(task_id: str):
+    entries = history.get_entries(limit=1000)
+    entry = next((item for item in entries if item.get("task_id") == task_id), None)
+    if not entry:
+        raise HTTPException(status_code=404, detail="History entry not found")
+    resolved = _safe_history_path(entry.get("audio_path") or "", expect_file=True)
+    return _open_path_in_shell(resolved.parent)
+
+
+@app.post("/api/history/{task_id}/open-result-folder")
+async def open_history_result_folder(task_id: str):
+    entries = history.get_entries(limit=1000)
+    entry = next((item for item in entries if item.get("task_id") == task_id), None)
+    if not entry:
+        raise HTTPException(status_code=404, detail="History entry not found")
+    result_path = entry.get("transcript_path") or ""
+    if not result_path and entry.get("audio_path"):
+        result_path = str(Path(entry["audio_path"]).with_name("result.json"))
+    resolved = _safe_history_path(result_path, expect_file=True)
+    return _open_path_in_shell(resolved.parent)
 
 
 @app.post("/api/history/clear")

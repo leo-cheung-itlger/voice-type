@@ -4,6 +4,8 @@
       <div class="section-title">
         <span>识别历史</span>
         <div class="actions">
+          <button class="btn btn-small btn-ghost" @click="store.openHistoryAudioRoot()">音频目录</button>
+          <button class="btn btn-small btn-ghost" @click="store.openHistoryResultRoot()">结果目录</button>
           <button class="btn btn-small btn-ghost" @click="store.fetchHistory()">刷新</button>
           <button class="btn btn-small btn-ghost" @click="store.clearHistory()">清空</button>
         </div>
@@ -15,11 +17,11 @@
             <span>{{ formatDuration(entry) }}</span>
           </div>
           <p>{{ entry.text }}</p>
-          <div v-if="entry.audio_path" class="path">{{ entry.audio_path }}</div>
-          <div v-if="entry.transcript_path" class="path">{{ entry.transcript_path }}</div>
           <div class="item-actions">
             <button class="btn btn-small btn-ghost" @click.stop="store.copyToClipboard(entry.text)">复制</button>
             <button class="btn btn-small btn-ghost" @click.stop="markEntry(entry)">标记</button>
+            <button v-if="entry.audio_path" class="btn btn-small btn-ghost" @click.stop="store.openHistoryAudioFolder(entry.task_id)">音频目录</button>
+            <button v-if="entry.transcript_path" class="btn btn-small btn-ghost" @click.stop="store.openHistoryResultFolder(entry.task_id)">结果目录</button>
             <button class="btn btn-small btn-ghost" @click.stop="store.deleteHistoryEntry(entry.task_id)">删除</button>
           </div>
           <div v-if="entry.marked" class="mark-row" @click.stop>
@@ -50,7 +52,7 @@ function formatTime(ts: number): string {
 }
 
 function formatDuration(entry: HistoryEntry): string {
-  return `${Number(entry.duration_seconds ?? entry.delay ?? 0).toFixed(1)}s`
+  return `推理 ${Number(entry.duration_seconds ?? entry.delay ?? 0).toFixed(1)}s`
 }
 
 function markEntry(entry: HistoryEntry) {
@@ -74,6 +76,12 @@ onMounted(() => store.fetchHistory())
 .mark-row {
   display: flex;
   gap: 7px;
+}
+
+.actions,
+.item-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .history-list {
@@ -108,17 +116,7 @@ onMounted(() => store.fetchHistory())
   word-break: break-word;
 }
 
-.path {
-  margin-top: 7px;
-  color: var(--faint);
-  font-size: 11px;
-  overflow-wrap: anywhere;
-  white-space: normal;
-  word-break: break-word;
-}
-
 .item-actions {
-  flex-wrap: wrap;
   margin-top: 10px;
 }
 

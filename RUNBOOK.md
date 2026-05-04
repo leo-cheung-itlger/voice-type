@@ -232,14 +232,18 @@ For frontend/control-console changes:
 4. Check console errors and visible UI layout.
 5. Visit Control, History, Hotwords, Stats, and Settings tabs.
 6. Verify API-driven fields load instead of silently showing defaults.
+7. On Settings, missing-model rows should stay short and the Download action should show one-click ModelScope download plus official model webpage options when configured.
+8. On History, rows should hide full archive paths by default, show `推理 x.xs`, and expose top-level/per-entry audio/result directory buttons.
 
 For API changes:
 
 1. Start API.
 2. Verify `/api/status`, `/api/health`, `/api/config`, `/api/models`.
-3. If the change touches hotwords, verify hotword read/write/reload.
-4. If the change touches process control, verify start/stop responses and status refresh.
-5. If the change touches audio capture, verify `/api/audio/test-input` returns the actual `capture_host_api`, `sample_rate`, `capture_channels`, `normalized_strategy`, `quality_state`, and `recognized_text`.
+3. If the change touches model download, verify `GET /api/models/{model_id}/download-modelscope` reports the expected install directory. Only click the POST-backed one-click download when the user explicitly wants to install/download the model.
+4. If the change touches history archive paths, verify folder-open endpoints remain constrained to VoiceType archive/data roots and only open existing files/folders.
+5. If the change touches hotwords, verify hotword read/write/reload.
+6. If the change touches process control, verify start/stop responses and status refresh.
+7. If the change touches audio capture, verify `/api/audio/test-input` returns the actual `capture_host_api`, `sample_rate`, `capture_channels`, `normalized_strategy`, `quality_state`, and `recognized_text`.
 
 For daily ASR changes:
 
@@ -292,8 +296,9 @@ Microphone selection checks:
 4. Click `测试`, speak for about 3 seconds, and confirm the UI shows one recording progress circle followed by one playback progress circle. The button must stay disabled until playback finishes, and the captured sample should auto-play once.
 5. Confirm the test result says `有声音` with non-trivial RMS/Peak values. For WASAPI 3.5mm device `20`, `/api/audio/test-input` should return `sample_rate=48000` and a WAV preview.
 6. Press the shortcut after saving and confirm `logs\recorder_*.log` reports the chosen device index/name and actual sample rate without requiring a restart. For device `20`, logs should show `rate=48000` and should not show `Failed to open input stream at 44100Hz`.
-7. If Windows changes device indexes after reboot, the client should remap the saved device by name/host API. If the saved device is missing, recording should fall back to the smart default, preferring real 3.5mm/WASAPI or DirectSound microphones and avoiding NetEase/remote/virtual/mapping inputs.
-8. If a real-time recording has near-zero RMS/Peak, the client should show `未检测到有效麦克风输入` and skip ASR submission.
+7. Confirm saved/test WAVs report `volume_policy=passthrough_no_gain` and `input_output_gain_ratio` close to `1.0`. Stereo captures should choose a real `channel_N` for saved/ASR mono audio; average downmix may appear only as non-selectable diagnostics and must not be the emitted audio path.
+8. If Windows changes device indexes after reboot, the client should remap the saved device by name/host API. If the saved device is missing, recording should fall back to the smart default, preferring real 3.5mm/WASAPI or DirectSound microphones and avoiding NetEase/remote/virtual/mapping inputs.
+9. If a real-time recording has near-zero RMS/Peak, the client should show `未检测到有效麦克风输入` and skip ASR submission.
 
 Mic test API:
 

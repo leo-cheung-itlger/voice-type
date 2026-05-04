@@ -208,12 +208,12 @@
             <small>{{ modelSummary(model) }}</small>
           </span>
           <div class="model-actions">
-            <a v-if="!model.exists && model.download_url" class="btn btn-small btn-ghost" :href="model.download_url" target="_blank" rel="noreferrer">下载</a>
+            <button v-if="!model.exists && model.download_url" class="btn btn-small btn-ghost" @click="downloadModel = model">下载</button>
             <button class="btn btn-small btn-ghost" @click="store.openModelFolder(model.id)">打开</button>
             <button class="btn btn-small" :class="store.config.server.model === model.id ? 'btn-primary' : 'btn-ghost'" @click="store.selectModel(model.id)">
               {{ store.config.server.model === model.id ? '已选' : '选择' }}
             </button>
-            <span class="model-state" :class="{ ok: model.exists }">{{ model.exists ? 'OK' : 'MISS' }}</span>
+            <span class="model-state" :class="{ ok: model.exists }">{{ model.exists ? '可用' : '未装' }}</span>
           </div>
         </div>
       </div>
@@ -250,6 +250,37 @@
       </div>
     </section>
 
+    <div v-if="downloadModel" class="modal-backdrop" @click.self="downloadModel = null">
+      <div class="modal">
+        <div>
+          <div class="value">下载 {{ downloadModel.name }}</div>
+          <div class="label">{{ downloadHint(downloadModel) }}</div>
+        </div>
+        <button
+          v-if="downloadModel.modelscope_id"
+          class="btn btn-primary"
+          :disabled="downloadJob(downloadModel)?.status === 'running'"
+          @click="startModelDownload(downloadModel)"
+        >
+          {{ downloadButtonLabel(downloadModel) }}
+        </button>
+        <div v-if="downloadJob(downloadModel)" class="download-status" :class="{ danger: downloadJob(downloadModel)?.status === 'error', ok: ['done', 'installed'].includes(downloadJob(downloadModel)?.status || '') }">
+          {{ downloadStatusText(downloadModel) }}
+        </div>
+        <a
+          v-if="downloadModel.download_url"
+          class="btn btn-ghost"
+          :href="downloadModel.download_url"
+          target="_blank"
+          rel="noreferrer"
+        >
+          打开官网网页
+        </a>
+        <button class="btn btn-ghost" @click="store.openModelFolder(downloadModel.id)">打开安装目录</button>
+        <button class="btn btn-small btn-ghost" @click="downloadModel = null">关闭</button>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -262,11 +293,13 @@ const store = useAppStore()
 const router = useRouter()
 const benchmarking = ref(false)
 const captureMode = ref(false)
+const downloadModel = ref<ModelEntry | null>(null)
 const saveState = ref('自动保存')
 const activeClientShortcut = ref('')
 const activeClientDevice = ref('')
 const selectedInputDevice = ref(-1)
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+let downloadPollTimer: ReturnType<typeof setInterval> | null = null
 let saveStarted = false
 
 const gpuLabel = computed(() => {
@@ -493,17 +526,78 @@ async function restartClient() {
 }
 
 function modelSummary(model: ModelEntry) {
-  const parts = [model.exists ? '已安装' : '未安装', model.backend || 'unknown']
-  if (model.role === 'daily') parts.push('日用候选')
+  const parts = [model.exists ? '已安装' : '未安装', modelFeatureLabel(model)]
+  if (model.role === 'daily') parts.push('日用')
   if (model.role === 'quality') parts.push('高质量')
-  if (model.blocking_reason) parts.push(blockingLabel(model.blocking_reason))
+  if (model.blocking_reason && model.blocking_reason !== 'model_missing') parts.push(blockingLabel(model.blocking_reason))
   const bench = bestBenchmark(model)
   if (bench?.ok) {
     const mode = bench.actual_gpu ? 'GPU' : 'CPU'
     parts.push(`${mode} ${Number(bench.recognition_seconds || bench.inference_seconds || 0).toFixed(2)}s`)
   }
-  if (bench && !bench.ok && bench.error) parts.push(`${bench.acceleration || '测试'}失败`)
   return parts.join(' · ')
+}
+
+function modelFeatureLabel(model: ModelEntry) {
+  if (model.id.includes('0.6b')) return '轻量 CUDA'
+  if (model.id.includes('gguf')) return 'CPU/GGUF 量化'
+  if (model.id === 'paraformer') return 'CPU 低延迟'
+  if (model.backend === 'sherpa-onnx') return 'CPU/ONNX'
+  if (model.id.includes('1.7b')) return '高质量 CUDA'
+  return model.backend || '模型'
+}
+
+function downloadHint(model: ModelEntry) {
+  if (model.modelscope_id) return '点击后会在项目 venv 中补装 ModelScope SDK，并把模型下载到安装目录；官网网页适合手动查看、克隆或下载文件。'
+  return '该模型暂无 ModelScope 配置，请从模型网页手动下载或按页面说明安装。'
+}
+
+function downloadJob(model: ModelEntry) {
+  return store.modelDownloads[model.id]
+}
+
+function downloadButtonLabel(model: ModelEntry) {
+  const status = downloadJob(model)?.status
+  if (status === 'running') return '正在下载'
+  if (status === 'done' || status === 'installed') return '已下载'
+  return '一键下载 ModelScope'
+}
+
+function downloadStatusText(model: ModelEntry) {
+  const job = downloadJob(model)
+  if (!job) return ''
+  if (job.status === 'error') return job.error || '下载失败'
+  if (job.status === 'running') return `${job.message || '正在下载'}：${job.target_dir || model.path}`
+  if (job.status === 'done' || job.status === 'installed') return job.message || '下载完成'
+  return job.message || ''
+}
+
+async function startModelDownload(model: ModelEntry) {
+  const job = await store.startModelScopeDownload(model.id)
+  if (!job) {
+    store.showToast(store.lastError || '下载启动失败')
+    return
+  }
+  store.showToast(job.message || '下载任务已启动')
+  if (job.status === 'running') {
+    startDownloadPolling(model.id)
+  } else if (job.status === 'done' || job.status === 'installed') {
+    await store.fetchModels()
+  }
+}
+
+function startDownloadPolling(modelId: string) {
+  if (downloadPollTimer) clearInterval(downloadPollTimer)
+  downloadPollTimer = setInterval(async () => {
+    const job = await store.fetchModelScopeDownload(modelId)
+    if (!job || job.status === 'running') return
+    if (downloadPollTimer) {
+      clearInterval(downloadPollTimer)
+      downloadPollTimer = null
+    }
+    await store.fetchModels()
+    store.showToast(job.status === 'error' ? (job.error || '下载失败') : '模型下载完成')
+  }, 3000)
 }
 
 function bestBenchmark(model: ModelEntry) {
@@ -580,6 +674,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onCaptureKeydown, true)
   if (saveTimer) clearTimeout(saveTimer)
+  if (downloadPollTimer) clearInterval(downloadPollTimer)
 })
 
 watch(
@@ -777,9 +872,14 @@ input[type="checkbox"] {
   display: block;
 }
 
+.model-row > span {
+  min-width: 0;
+}
+
 .model-row small {
   margin-top: 3px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .model-actions {
@@ -858,7 +958,7 @@ input[type="checkbox"] {
   grid-template-columns: 1fr auto;
   gap: 10px;
   align-items: center;
-  margin-top: 10px;
+  margin: 10px 13px 12px;
   padding-top: 10px;
   border-top: 1px solid var(--line);
 }
@@ -890,6 +990,24 @@ input[type="checkbox"] {
   border-radius: 12px;
   background: var(--panel);
   box-shadow: var(--shadow);
+}
+
+.download-status {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.download-status.ok {
+  color: var(--ok);
+}
+
+.download-status.danger {
+  color: var(--danger);
 }
 
 .modal-actions {
