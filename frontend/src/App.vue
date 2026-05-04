@@ -2,7 +2,10 @@
   <main class="shell">
     <header class="topbar">
       <div>
-        <div class="brand">VoiceType</div>
+        <div class="brand-row">
+          <div class="brand">VoiceType</div>
+          <span class="version-badge" :title="store.appBuildTime">{{ store.appBuildLabel }}</span>
+        </div>
         <div class="subline">{{ store.serviceLabel }} · {{ store.config.server.model }} · {{ store.frontendSource }}</div>
       </div>
       <div class="status-pills" aria-label="service status">

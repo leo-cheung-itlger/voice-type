@@ -78,6 +78,10 @@ fn powershell_command(root: &PathBuf, script: &str) -> Command {
     command
 }
 
+fn ps_quote_path(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "''"))
+}
+
 fn start_runtime() -> Result<String, String> {
     let root = project_root();
     let script = root.join("scripts\\start-runtime.ps1");
@@ -127,8 +131,39 @@ fn runtime_diagnostics() -> Result<String, String> {
 
 #[tauri::command]
 fn restart_runtime() -> Result<String, String> {
-    let _ = stop_runtime();
-    start_runtime()
+    let root = project_root();
+    let stop_script = script_path("scripts\\stop-dev.ps1");
+    let start_script = script_path("scripts\\start-runtime.ps1");
+    if !stop_script.exists() {
+        return Err(format!("停止脚本缺失: {}", stop_script.display()));
+    }
+    if !start_script.exists() {
+        return Err(format!("运行时脚本缺失: {}", start_script.display()));
+    }
+    let command_text = format!(
+        "& {} -Root {}; & {} -Root {}",
+        ps_quote_path(&stop_script),
+        ps_quote_path(&root),
+        ps_quote_path(&start_script),
+        ps_quote_path(&root)
+    );
+    let mut command = Command::new("powershell.exe");
+    command
+        .current_dir(&root)
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(command_text)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+        .spawn()
+        .map(|_| "runtime restarting".to_string())
+        .map_err(|err| format!("重启运行时失败: {err}"))
 }
 
 #[tauri::command]

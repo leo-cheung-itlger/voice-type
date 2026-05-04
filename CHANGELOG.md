@@ -1,6 +1,24 @@
 # CHANGELOG
 
+## 2026-05-04
+
+- Fixed Caps Lock real-time recording running short and sounding fast/electronic in history playback. The live drain loop no longer sleeps an extra 20ms after each blocking PyAudio read, so it can keep pace with the input stream.
+- Added Caps Lock duration diagnostics: `held_seconds`, `recorded_duration_seconds`, and `capture_realtime_ratio` are logged and written to `result.json`; recordings below a 0.85 realtime ratio now emit a warning.
+- Validation: Python compile passed; frontend typecheck/build passed; a direct real-device recorder smoke captured 2.000s of audio over 2.015s elapsed (`capture_realtime_ratio=0.993`) on `3.5mm麦克风 / Windows WASAPI / 48000Hz / 2ch`. The local runtime was started with `scripts/start-dev.ps1` and now reports managed ASR/client running; one user-side 3-second Caps Lock recording remains the final playback-quality confirmation.
+
 ## 2026-05-03
+
+- Fixed the remaining Caps Lock/test-path divergence: real-time recording now carries the remembered `preferred_normalized_strategy` and channel index from the opened capture profile into the final mono normalization step, matching `/api/audio/test-input` instead of re-choosing a stereo channel/average at key release.
+- Added extra capture metadata to real-time result JSON/logs so a bad recording can be compared against the exact profile and preferred normalization strategy that was used.
+- Made runtime restart actions bounded: the Tauri restart command now launches the stop/start sequence in the background, the frontend stops showing an infinite spinner after a timeout, and Live UI restarts ASR/client through the API when no Tauri runtime is present.
+- Added a visible top-left build marker (`version + git sha + dirty flag`) so source Live UI and stale bundled EXE builds can be distinguished immediately.
+- Validation: Python compile passed; a recorder-path smoke confirmed `AudioRecorder.stop()` now honors the remembered `average` strategy; frontend typecheck/build passed; Tauri `cargo check` passed via `C:\Users\13678\.cargo\bin\cargo.exe`; Live UI browser smoke showed `Ready`, `live-ui`, and `v1.0.0+09c90ba9-dirty` with no console errors. The automated speaker-to-microphone smoke captured silence-level input in this environment, so the final Caps Lock audio-quality confirmation still needs one user-side press after the restarted client.
+
+- Reworked the microphone capture pipeline around shared capture profiles. Real-time recording, `/api/audio/test-input`, and microphone diagnostics now probe actual device-supported formats with `2ch -> 1ch` fallback, normalize stereo captures to the cleanest mono variant, and remember per-microphone `host_api / sample_rate / capture_channels / normalized_strategy` in ignored runtime data for later reuse.
+- Extended microphone test results and archive metadata with actual capture-profile facts: `capture_host_api`, `capture_channels`, `normalized_channels`, `normalized_strategy`, `normalized_channel_index`, `channel_analysis`, `stereo_correlation`, `quality_state`, and recognized preview text.
+- Added `scripts/validate_audio_regression.py` to replay the user-provided reference sentence through the speaker, record it through VoiceType, transcribe the recorded WAV with the local `qwen3-asr-1.7b`, and score whether the captured sentence still matches the target phrase.
+- Fixed a stereo-normalization persistence bug where `channel_0` was being written back as `-1`, preventing the remembered preferred channel from being reused on later captures.
+- Validation: Python compile passed; frontend typecheck/build passed; direct model baseline still recognized the reference `.weba` sentence exactly; the regression harness validated `3.5mm麦克风 (Senary Audio) / Windows WASAPI / 48000Hz / 2ch` with the exact target sentence; a direct split-channel check on `麦克风阵列 (Senary Audio) / Windows WASAPI / 48000Hz / 2ch` also produced the exact target sentence after the channel-index fix; `/api/audio/test-input` now returns structured capture-profile data and correctly reports `太安静` when nothing is being played.
 
 - Added `VoiceType-live-ui.bat` and `scripts/start-live-ui.ps1` as the default no-rebuild development entry. The script starts the runtime plus Vite, opens `http://127.0.0.1:55343/#/`, and avoids using stale bundled EXE assets to validate frontend fixes.
 - Added a frontend source marker in the app header and Settings page so `live-ui` and `bundled-exe` are visibly different during troubleshooting.

@@ -39,7 +39,17 @@ Start the latest source UI without rebuilding the EXE:
 VoiceType-live-ui.bat
 ```
 
-This is the default daily development/testing entry. It starts the Python runtime, starts Vite on `http://127.0.0.1:55343`, opens the browser, and shows `live-ui` in the app header/settings. Use this to validate frontend changes. The portable EXE contains bundled UI assets and should only be used when validating a packaged release.
+This is the default daily development/testing entry. It starts the Python runtime, starts Vite on `http://127.0.0.1:55343`, opens the browser, and shows `live-ui` plus a `v1.0.0+<git>` build marker in the app header/settings. Use this to validate frontend changes. The portable EXE contains bundled UI assets and should only be used when validating a packaged release.
+
+If the runtime restart button is needed, it should return control to the UI instead of spinning indefinitely. Live UI restarts ASR/client through the API; the Tauri shell starts the stop/start sequence in the background and the frontend polls readiness with a visible timeout.
+
+Validate the microphone regression harness against the user-provided reference sentence:
+
+```bat
+venv\Scripts\python.exe scripts\validate_audio_regression.py
+```
+
+This converts the reference `.weba` file to `48k mono`, plays it through the current speaker output, records from the requested microphones, runs the recorded WAV back through the local `qwen3-asr-1.7b`, and writes validation WAVs under `data\transcription_validation\audio_regression\`. Use the `3.5mm` microphone for speaker-facing playback validation; the laptop array microphone should be validated in its real physical position, not forced to share the same speaker geometry. Caps Lock validation should report the same remembered `normalized_strategy`/channel preference as the passing Settings test for the same microphone.
 
 Stop desktop services:
 
@@ -166,6 +176,7 @@ Then verify:
 - `http://127.0.0.1:55342/api/config`
 - `http://127.0.0.1:55342/api/models`
 - `http://127.0.0.1:55342/api/hardware`
+- `http://127.0.0.1:55342/api/audio/test-input` with a real microphone selected
 
 5. ASR smoke test:
 
@@ -228,6 +239,7 @@ For API changes:
 2. Verify `/api/status`, `/api/health`, `/api/config`, `/api/models`.
 3. If the change touches hotwords, verify hotword read/write/reload.
 4. If the change touches process control, verify start/stop responses and status refresh.
+5. If the change touches audio capture, verify `/api/audio/test-input` returns the actual `capture_host_api`, `sample_rate`, `capture_channels`, `normalized_strategy`, `quality_state`, and `recognized_text`.
 
 For daily ASR changes:
 
@@ -238,6 +250,15 @@ For daily ASR changes:
 5. Confirm saved audio path is present when recording save is enabled.
 6. Restart server/client and confirm status recovers.
 7. If recording notifications are enabled, confirm a topmost desktop prompt and a short beep appear on start and finish.
+8. For Caps Lock audio-quality checks, hold the shortcut for about 3 seconds and inspect the newest `result.json`: `recorded_duration_seconds` should be close to `held_seconds`, and `capture_realtime_ratio` should be at least `0.85`.
+
+Microphone regression checks:
+
+1. Run `venv\Scripts\python.exe scripts\validate_audio_regression.py`.
+2. Confirm the baseline direct-model recognition of the reference file still matches `你好，请问听得到我说话吗？这边正在测试麦克风`.
+3. Confirm the `3.5mm麦克风 (Senary Audio)` best result is `Windows WASAPI / 48000Hz / 2ch` with the exact target sentence.
+4. For the laptop array microphone, validate in its normal physical position; do not require the same speaker-facing geometry as the external 3.5mm microphone.
+5. After a passing run, restart the runtime so the remembered capture profiles are picked up by the live recording client.
 
 Special-key shortcut checks:
 
@@ -261,6 +282,7 @@ Short-press and archive checks:
 3. Hold the shortcut longer than the threshold; the task should create `data\archive\YYYY\MM\DD\HHMMSS_<task_id>\recording.wav` and `result.json`.
 4. The topmost prompt should move from recording to analyzing with seconds, then success with a one-decimal duration.
 5. History and Dashboard should show the result duration to one decimal place.
+6. For normal dictation, `recording.wav` playback should have natural speed and pitch; if it sounds fast/electronic, compare `held_seconds`, `recorded_duration_seconds`, and `capture_realtime_ratio` in `result.json` before changing playback code.
 
 Microphone selection checks:
 

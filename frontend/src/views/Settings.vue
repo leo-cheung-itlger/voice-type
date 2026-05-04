@@ -321,7 +321,14 @@ const audioTestLabel = computed(() => {
   const rms = Number(result.rms_ratio || 0)
   const peak = Number(result.peak_ratio || 0)
   const device = result.device_name ? `${result.device_name} · ` : ''
-  return `${device}${result.message} · RMS ${(rms * 100).toFixed(2)}% · Peak ${(peak * 100).toFixed(2)}%`
+  const profile = [
+    result.capture_host_api || result.host_api || '',
+    result.sample_rate ? `${result.sample_rate}Hz` : '',
+    result.capture_channels ? `${result.capture_channels}ch` : '',
+    result.normalized_strategy || '',
+  ].filter(Boolean).join(' · ')
+  const recognition = result.recognized_text ? ` · 识别：${result.recognized_text}` : result.recognition_error ? ` · 识别失败：${result.recognition_error}` : ''
+  return `${device}${result.message}${profile ? ` · ${profile}` : ''} · RMS ${(rms * 100).toFixed(2)}% · Peak ${(peak * 100).toFixed(2)}%${recognition}`
 })
 
 const microphoneTestButtonLabel = computed(() => {
@@ -459,6 +466,8 @@ async function testMicrophone() {
   const result = await store.testAudioInput(Number(selectedInputDevice.value ?? -1))
   if (result && !result.has_signal) {
     store.showToast('未检测到有效声音，建议切换同名 WASAPI/48000Hz 设备')
+  } else if (result && !result.recognition_ok) {
+    store.showToast(result.recognition_error || '录到了声音，但识别仍然失败')
   }
 }
 

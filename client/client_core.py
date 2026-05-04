@@ -381,7 +381,7 @@ class VoiceClient:
     async def _drain_recording(self):
         while self._recording and self._recorder.is_recording:
             self._recorder.read_chunk()
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(0)
 
     async def _on_key_up(self):
         if not self._recording:
@@ -392,6 +392,28 @@ class VoiceClient:
 
         capture = self._recorder.stop()
         held_seconds = max(time.monotonic() - self._key_down_at, 0.0)
+        audio_data = capture.get("normalized_audio", b"")
+        sample_rate = int(capture.get("sample_rate", self._recorder.sample_rate) or self._recorder.sample_rate or 1)
+        normalized_channels = int(capture.get("normalized_channels", self._recorder.normalized_channels) or 1)
+        recorded_duration_seconds = (
+            len(audio_data) / max(1, sample_rate * normalized_channels * 2)
+            if audio_data else 0.0
+        )
+        capture_realtime_ratio = (
+            recorded_duration_seconds / held_seconds
+            if held_seconds > 0 else 0.0
+        )
+        capture["held_seconds"] = round(held_seconds, 3)
+        capture["recorded_duration_seconds"] = round(recorded_duration_seconds, 3)
+        capture["capture_realtime_ratio"] = round(capture_realtime_ratio, 3)
+        if held_seconds >= 0.5 and capture_realtime_ratio < 0.85:
+            logger.warning(
+                "Recording capture lag detected: held=%.3fs recorded=%.3fs ratio=%.3f",
+                held_seconds,
+                recorded_duration_seconds,
+                capture_realtime_ratio,
+            )
+
         min_press_seconds = max(float(self._config.min_press_seconds or 0), 0.0)
         if held_seconds < min_press_seconds:
             logger.info(
@@ -404,7 +426,6 @@ class VoiceClient:
 
         self._notifier.recording_finished()
 
-        audio_data = capture.get("normalized_audio", b"")
         if not audio_data:
             self._notifier.output_failed("没有录到音频")
             return
@@ -412,7 +433,7 @@ class VoiceClient:
         audio_level = capture.get("audio_level", self._recorder.audio_level(capture))
         quality_state = str(audio_level.get("quality_state") or "")
         logger.info(
-            "Recording level: rms=%s peak=%s signal=%s quality=%s sample_rate=%s host_api=%s capture_channels=%s normalized_channels=%s",
+            "Recording level: rms=%s peak=%s signal=%s quality=%s sample_rate=%s host_api=%s capture_channels=%s normalized_channels=%s strategy=%s preferred=%s:%s held=%ss recorded=%ss ratio=%s",
             audio_level.get("rms_ratio"),
             audio_level.get("peak_ratio"),
             audio_level.get("has_signal"),
@@ -421,6 +442,12 @@ class VoiceClient:
             capture.get("host_api", self._recorder.host_api),
             capture.get("capture_channels", self._recorder.capture_channels),
             capture.get("normalized_channels", self._recorder.normalized_channels),
+            capture.get("normalized_strategy", "mono"),
+            capture.get("preferred_normalized_strategy", ""),
+            capture.get("preferred_normalized_channel_index", -1),
+            capture["held_seconds"],
+            capture["recorded_duration_seconds"],
+            capture["capture_realtime_ratio"],
         )
         if not audio_level.get("has_signal"):
             self._notifier.output_failed(quality_message(audio_level))
@@ -451,7 +478,16 @@ class VoiceClient:
             "capture_host_api": capture.get("host_api", self._recorder.host_api),
             "capture_channels": capture.get("capture_channels", self._recorder.capture_channels),
             "normalized_channels": capture.get("normalized_channels", self._recorder.normalized_channels),
+            "normalized_strategy": capture.get("normalized_strategy", "mono"),
+            "normalized_channel_index": capture.get("normalized_channel_index", -1),
+            "preferred_normalized_strategy": capture.get("preferred_normalized_strategy", ""),
+            "preferred_normalized_channel_index": capture.get("preferred_normalized_channel_index", -1),
+            "channel_analysis": capture.get("channel_analysis", []),
+            "stereo_correlation": capture.get("stereo_correlation"),
             "device_name": capture.get("device_name", ""),
+            "held_seconds": capture.get("held_seconds", 0),
+            "recorded_duration_seconds": capture.get("recorded_duration_seconds", 0),
+            "capture_realtime_ratio": capture.get("capture_realtime_ratio", 0),
         })
 
     def _archive_dir(self, task_id: str) -> str:
@@ -528,7 +564,16 @@ class VoiceClient:
                 "capture_host_api": item.get("capture_host_api", ""),
                 "capture_channels": item.get("capture_channels", 1),
                 "normalized_channels": item.get("normalized_channels", 1),
+                "normalized_strategy": item.get("normalized_strategy", "mono"),
+                "normalized_channel_index": item.get("normalized_channel_index", -1),
+                "preferred_normalized_strategy": item.get("preferred_normalized_strategy", ""),
+                "preferred_normalized_channel_index": item.get("preferred_normalized_channel_index", -1),
+                "channel_analysis": item.get("channel_analysis", []),
+                "stereo_correlation": item.get("stereo_correlation"),
                 "device_name": item.get("device_name", ""),
+                "held_seconds": item.get("held_seconds", 0),
+                "recorded_duration_seconds": item.get("recorded_duration_seconds", 0),
+                "capture_realtime_ratio": item.get("capture_realtime_ratio", 0),
                 "time_start": result.get("time_start"),
                 "time_submit": result.get("time_submit"),
                 "time_complete": result.get("time_complete"),

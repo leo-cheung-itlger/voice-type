@@ -185,7 +185,30 @@ export interface AudioInputTestResult {
   device_index?: number
   device_name?: string
   host_api?: string
+  capture_host_api?: string
   sample_rate?: number
+  capture_channels?: number
+  normalized_channels?: number
+  normalized_strategy?: string
+  normalized_channel_index?: number
+  channel_analysis?: Array<{
+    strategy: string
+    channel_index: number
+    audio_level: {
+      rms_ratio?: number
+      peak_ratio?: number
+      quality_state?: string
+    }
+  }>
+  stereo_correlation?: number
+  quality_state?: string
+  clipping_ratio?: number
+  dc_offset_ratio?: number
+  zero_crossing_rate?: number
+  recognized_text?: string
+  recognition_ok?: boolean
+  recognition_error?: string
+  recognition_model?: string
   seconds?: number
   bytes?: number
   samples?: number
@@ -200,6 +223,26 @@ export interface AudioLevelDevice extends AudioInputDevice {
   ok: boolean
   message: string
   has_signal: boolean
+  sample_rate?: number
+  capture_host_api?: string
+  capture_channels?: number
+  normalized_channels?: number
+  normalized_strategy?: string
+  normalized_channel_index?: number
+  channel_analysis?: Array<{
+    strategy: string
+    channel_index: number
+    audio_level: {
+      rms_ratio?: number
+      peak_ratio?: number
+      quality_state?: string
+    }
+  }>
+  stereo_correlation?: number
+  quality_state?: string
+  clipping_ratio?: number
+  dc_offset_ratio?: number
+  zero_crossing_rate?: number
   bytes?: number
   samples?: number
   rms?: number
@@ -259,6 +302,11 @@ const API_BASE = (() => {
 })()
 
 const FRONTEND_SOURCE = import.meta.env.DEV ? 'live-ui' : 'bundled-exe'
+const APP_VERSION = __APP_VERSION__
+const APP_BUILD_SHA = __APP_BUILD_SHA__
+const APP_BUILD_DIRTY = __APP_BUILD_DIRTY__
+const APP_BUILD_TIME = __APP_BUILD_TIME__
+const APP_BUILD_LABEL = `v${APP_VERSION}+${APP_BUILD_SHA}${APP_BUILD_DIRTY ? '-dirty' : ''}`
 
 const WS_RECOGNITION_URL = (() => {
   const configured = import.meta.env.VITE_WS_RECOGNITION_URL
@@ -475,9 +523,16 @@ export const useAppStore = defineStore('app', () => {
     }
   })
 
-  async function apiFetch<T = any>(path: string, options?: RequestInit): Promise<T | null> {
+  async function apiFetch<T = any>(path: string, options?: RequestInit, timeoutMs = 0): Promise<T | null> {
+    let timeout: ReturnType<typeof setTimeout> | null = null
+    let requestOptions = options
+    if (timeoutMs > 0) {
+      const controller = new AbortController()
+      timeout = setTimeout(() => controller.abort(), timeoutMs)
+      requestOptions = { ...(options || {}), signal: controller.signal }
+    }
     try {
-      const res = await fetch(`${API_BASE}${path}`, options)
+      const res = await fetch(`${API_BASE}${path}`, requestOptions)
       const text = await res.text()
       let data: any = {}
       if (text.trim()) {
@@ -491,13 +546,17 @@ export const useAppStore = defineStore('app', () => {
       lastError.value = ''
       return data
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = error instanceof DOMException && error.name === 'AbortError'
+        ? `请求超时：${API_BASE}${path}`
+        : error instanceof Error ? error.message : String(error)
       if (!(message === 'Failed to fetch' && Date.now() < connectionErrorQuietUntil.value)) {
         lastError.value = message === 'Failed to fetch'
           ? `无法连接 VoiceType API：${API_BASE}${path}。请确认运行时已启动，或点击“重新启动运行时”。`
           : message
       }
       return null
+    } finally {
+      if (timeout) clearTimeout(timeout)
     }
   }
 
@@ -505,8 +564,8 @@ export const useAppStore = defineStore('app', () => {
     connectionErrorQuietUntil.value = Math.max(connectionErrorQuietUntil.value, Date.now() + ms)
   }
 
-  async function fetchStatus() {
-    const data = await apiFetch<any>('/status')
+  async function fetchStatus(timeoutMs = 0) {
+    const data = await apiFetch<any>('/status', undefined, timeoutMs)
     if (data) {
       serverRunning.value = Boolean(data.server.running)
       clientRunning.value = Boolean(data.client.running)
@@ -529,21 +588,21 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function fetchHealth() {
-    const data = await apiFetch<any>('/health')
+  async function fetchHealth(timeoutMs = 0) {
+    const data = await apiFetch<any>('/health', undefined, timeoutMs)
     if (data) {
       recentIssues.value = data.recent_issues || []
-      await fetchStatus()
+      await fetchStatus(timeoutMs)
     }
   }
 
-  async function fetchConfig() {
-    const data = await apiFetch<AppConfig>('/config')
+  async function fetchConfig(timeoutMs = 0) {
+    const data = await apiFetch<AppConfig>('/config', undefined, timeoutMs)
     if (data) config.value = data
   }
 
-  async function fetchAudioInputDevices() {
-    const data = await apiFetch<AudioInputDevicesResponse>('/audio/input-devices')
+  async function fetchAudioInputDevices(timeoutMs = 0) {
+    const data = await apiFetch<AudioInputDevicesResponse>('/audio/input-devices', undefined, timeoutMs)
     if (data) audioInputDevices.value = data
     return data
   }
@@ -704,6 +763,28 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  function hasTauriRuntime() {
+    return Boolean((window as any).__TAURI_INTERNALS__)
+  }
+
+  function sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  async function waitForRuntimeReady(timeoutMs: number) {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      await fetchStatus(5000)
+      if (serverRunning.value && clientRunning.value) {
+        lastError.value = ''
+        return true
+      }
+      await sleep(1500)
+    }
+    lastError.value = '运行时重启超时：ASR 或 Client 没有在限定时间内恢复。请点“诊断”查看进程状态。'
+    return false
+  }
+
   async function fetchRuntimeDiagnostics() {
     const data = await tauriInvoke<string>('runtime_diagnostics')
     if (data) runtimeDiagnostics.value = data
@@ -711,13 +792,29 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function restartRuntime() {
+    if (runtimeRestarting.value) return null
     runtimeRestarting.value = true
-    const data = await tauriInvoke<string>('restart_runtime')
-    if (data) showToast('正在重启运行时')
-    await new Promise((resolve) => setTimeout(resolve, 2200))
-    await Promise.all([fetchStatus(), fetchHealth(), fetchConfig(), fetchAudioInputDevices()])
-    runtimeRestarting.value = false
-    return data
+    suppressConnectionErrors(90000)
+    lastError.value = ''
+    try {
+      let data: string | null = null
+      if (hasTauriRuntime()) {
+        data = await Promise.race([
+          tauriInvoke<string>('restart_runtime'),
+          sleep(8000).then(() => null),
+        ])
+        showToast(data ? '正在重启运行时' : '重启命令已发出，继续检测状态')
+      } else {
+        showToast('正在重启 ASR 和录音客户端')
+        await apiFetch('/stop-all', { method: 'POST' }, 20000)
+        await apiFetch('/start-all', { method: 'POST' }, 190000)
+      }
+      await waitForRuntimeReady(90000)
+      await Promise.all([fetchHealth(8000), fetchConfig(8000), fetchAudioInputDevices(12000)])
+      return data
+    } finally {
+      runtimeRestarting.value = false
+    }
   }
 
   async function startAll() {
@@ -1012,6 +1109,8 @@ export const useAppStore = defineStore('app', () => {
     ffmpeg, llmConfig, transcriptions, audioInputDevices, audioInputTest, audioInputTesting, audioInputTestPhase, audioInputTestProgress, audioLevelScan, audioLevelScanning, playingTaskId, runtimeDiagnostics, runtimeRestarting, hardware, benchmarks, benchmarkingModels, lastError,
     apiBase: API_BASE,
     frontendSource: FRONTEND_SOURCE,
+    appBuildLabel: APP_BUILD_LABEL,
+    appBuildTime: APP_BUILD_TIME,
     latestEntry, totalEntries, avgDelay, serviceLabel, selectedModel, accelerationState, accelerationRecommendation,
     fetchStatus, fetchHealth, fetchConfig, fetchAudioInputDevices, testAudioInput, scanAudioLevels, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, applyAccelerationRecommendation,
     startServer, stopServer, startClient, stopClient, restartClient, startAll, stopAll,

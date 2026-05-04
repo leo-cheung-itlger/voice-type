@@ -1,10 +1,8 @@
-import asyncio
 import os
-import time
 from typing import Any, Optional
 
 from common.audio_capture import (
-    normalize_pcm16_to_mono,
+    normalize_capture_audio,
     open_input_stream_with_profile,
     resolve_input_device_index,
     wav_bytes_from_pcm16,
@@ -39,6 +37,10 @@ class AudioRecorder:
         self._active_host_api = input_device_host_api
         self._active_capture_channels = max(1, int(channels or 1))
         self._normalized_channels = 1
+        self._normalized_strategy = "mono"
+        self._normalized_channel_index = 0
+        self._preferred_normalized_strategy = ""
+        self._preferred_normalized_channel_index = -1
         self._recording = False
         self._audio_chunks: list = []
         self._stream = None
@@ -139,6 +141,12 @@ class AudioRecorder:
         self._active_host_api = str(profile.get("host_api") or self._input_device_host_api or "")
         self._active_capture_channels = int(profile.get("capture_channels") or self._channels or 1)
         self._normalized_channels = int(profile.get("normalized_channels") or 1)
+        self._preferred_normalized_strategy = str(profile.get("preferred_normalized_strategy") or "")
+        self._preferred_normalized_channel_index = (
+            int(profile.get("preferred_normalized_channel_index"))
+            if profile.get("preferred_normalized_channel_index") is not None
+            else -1
+        )
 
     def read_chunk(self) -> Optional[bytes]:
         if not self._recording or self._stream is None:
@@ -170,28 +178,51 @@ class AudioRecorder:
                 pass
             self._pyaudio = None
 
-        normalized_audio = normalize_pcm16_to_mono(raw_audio, self._active_capture_channels)
-        level = measure_pcm16_level(normalized_audio)
+        normalized = normalize_capture_audio(
+            raw_audio,
+            self._active_capture_channels,
+            preferred_strategy=self._preferred_normalized_strategy,
+            preferred_channel_index=self._preferred_normalized_channel_index,
+        )
+        normalized_audio = normalized["normalized_audio"]
+        level = normalized["audio_level"] or measure_pcm16_level(normalized_audio)
+        self._normalized_channels = int(normalized.get("normalized_channels") or 1)
+        self._normalized_strategy = str(normalized.get("normalized_strategy") or "mono")
+        self._normalized_channel_index = (
+            int(normalized.get("normalized_channel_index"))
+            if normalized.get("normalized_channel_index") is not None
+            else -1
+        )
         capture = {
             "raw_audio": raw_audio,
             "normalized_audio": normalized_audio,
             "sample_rate": self._active_sample_rate,
             "capture_channels": self._active_capture_channels,
             "normalized_channels": self._normalized_channels,
+            "normalized_strategy": self._normalized_strategy,
+            "normalized_channel_index": self._normalized_channel_index,
+            "preferred_normalized_strategy": self._preferred_normalized_strategy,
+            "preferred_normalized_channel_index": self._preferred_normalized_channel_index,
+            "channel_analysis": normalized.get("channel_analysis") or [],
+            "stereo_correlation": normalized.get("stereo_correlation"),
             "device_index": self._active_device_index,
             "device_name": self._active_device_name,
             "host_api": self._active_host_api,
             "audio_level": level,
+            "quality_state": str(level.get("quality_state") or ""),
         }
         self._last_capture = capture
         logger.info(
-            "Recording stopped, raw=%s bytes normalized=%s bytes rms=%s peak=%s signal=%s quality=%s",
+            "Recording stopped, raw=%s bytes normalized=%s bytes rms=%s peak=%s signal=%s quality=%s strategy=%s preferred=%s:%s",
             len(raw_audio),
             len(normalized_audio),
             level["rms_ratio"],
             level["peak_ratio"],
             level["has_signal"],
             level.get("quality_state"),
+            self._normalized_strategy,
+            self._preferred_normalized_strategy or "-",
+            self._preferred_normalized_channel_index,
         )
         return capture
 

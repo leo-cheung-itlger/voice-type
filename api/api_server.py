@@ -1,14 +1,12 @@
 import asyncio
 import base64
 import glob
-import io
 import json
 import os
 import socket
 import subprocess
 import sys
 import time
-import wave
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -22,14 +20,12 @@ from pydantic import BaseModel
 import uvicorn
 import websockets as ws_lib
 
+from common.audio_capture import capture_input_once, remember_capture_profile, wav_bytes_from_pcm16
 from common.audio_devices import (
     best_input_device,
-    candidate_input_sample_rates,
     device_matches_selection,
     input_device_recommendation,
-    supported_input_sample_rates,
 )
-from common.audio_levels import measure_pcm16_level, pcm16_waveform
 from common.history import HistoryManager
 from common.hotword import HotwordManager
 from common.logger import setup_logger
@@ -861,7 +857,7 @@ def _pyaudio_input_devices(audio: Any, selected_config: ClientConfig | None = No
         if max_channels <= 0:
             continue
         name = str(info.get("name", ""))
-        host_api_index = int(info.get("hostApi", -1) or -1)
+        host_api_index = int(info.get("hostApi", -1)) if info.get("hostApi", -1) is not None else -1
         host_api = _pyaudio_host_api(audio, host_api_index)
         sample_rate = int(float(info.get("defaultSampleRate", 0) or 0))
         is_default = index == default_index
@@ -961,63 +957,47 @@ def _record_audio_test(device_index: int, seconds: float) -> dict:
         return {"ok": False, "message": f"PyAudio unavailable: {exc}", "has_signal": False}
 
     audio = pyaudio.PyAudio()
-    stream = None
     seconds = max(0.5, min(float(seconds or 3.0), 5.0))
     try:
         if device_index < 0:
             devices = _pyaudio_input_devices(audio)
             best_index = best_input_device(devices, default_index=_pyaudio_default_input_index(audio))
             device_index = best_index if best_index is not None else -1
-        info = (
-            audio.get_device_info_by_index(device_index)
-            if device_index >= 0
-            else audio.get_default_input_device_info()
-        )
-        index = int(info.get("index", -1))
-        host_api = _pyaudio_host_api(audio, int(info.get("hostApi", -1) or -1))
-        channels = 1
-        default_rate = int(float(info.get("defaultSampleRate", 0) or 0)) or 48000
-        candidates = candidate_input_sample_rates(
-            default_sample_rate=default_rate,
-            preferred_sample_rate=default_rate,
+        capture = capture_input_once(
+            audio,
+            pyaudio,
+            None if device_index < 0 else device_index,
+            seconds=seconds,
+            preferred_sample_rate=0,
             configured_sample_rate=48000,
+            preferred_channels=2,
+            logger=logger,
         )
-        supported_rates = supported_input_sample_rates(audio, pyaudio, index, channels, candidates)
-        sample_rate = supported_rates[0] if supported_rates else candidates[0]
-        chunk = 960
-        open_kwargs = {
-            "format": pyaudio.paInt16,
-            "channels": channels,
-            "rate": sample_rate,
-            "input": True,
-            "frames_per_buffer": chunk,
-        }
-        if index >= 0:
-            open_kwargs["input_device_index"] = index
-        stream = audio.open(**open_kwargs)
-        chunks = []
-        total_chunks = max(1, int(sample_rate / chunk * seconds))
-        for _ in range(total_chunks):
-            chunks.append(stream.read(chunk, exception_on_overflow=False))
-        data = b"".join(chunks)
-        level = measure_pcm16_level(data)
-        wav_buffer = io.BytesIO()
-        with wave.open(wav_buffer, "wb") as wf:
-            wf.setnchannels(channels)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            wf.writeframes(data)
-        message = "有声音" if level["has_signal"] else "太安静或未检测到有效输入"
+        level = capture["audio_level"]
+        wav_data = wav_bytes_from_pcm16(
+            capture["normalized_audio"],
+            int(capture["sample_rate"]),
+            int(capture.get("normalized_channels") or 1),
+        )
         return {
             "ok": True,
-            "message": message,
+            "message": capture["message"],
             "has_signal": level["has_signal"],
-            "device_index": index,
-            "device_name": str(info.get("name") or ""),
-            "host_api": host_api,
-            "sample_rate": sample_rate,
+            "device_index": capture.get("device_index"),
+            "device_name": capture.get("device_name", ""),
+            "host_api": capture.get("host_api", ""),
+            "capture_host_api": capture.get("host_api", ""),
+            "sample_rate": capture.get("sample_rate"),
             "seconds": seconds,
-            "audio_wav_base64": base64.b64encode(wav_buffer.getvalue()).decode("ascii"),
+            "capture_channels": capture.get("capture_channels"),
+            "normalized_channels": capture.get("normalized_channels"),
+            "normalized_strategy": capture.get("normalized_strategy"),
+            "normalized_channel_index": capture.get("normalized_channel_index"),
+            "channel_analysis": capture.get("channel_analysis", []),
+            "stereo_correlation": capture.get("stereo_correlation"),
+            "quality_state": capture.get("quality_state"),
+            "audio_wav_base64": base64.b64encode(wav_data).decode("ascii"),
+            "normalized_audio": capture.get("normalized_audio", b""),
             **level,
         }
     except Exception as exc:
@@ -1028,45 +1008,96 @@ def _record_audio_test(device_index: int, seconds: float) -> dict:
             "device_index": device_index,
         }
     finally:
-        if stream is not None:
-            try:
-                stream.stop_stream()
-                stream.close()
-            except Exception:
-                pass
         audio.terminate()
+
+
+async def _recognize_audio_preview(audio_data: bytes, sample_rate: int) -> dict:
+    if not audio_data:
+        return {"ok": False, "text": "", "error": "empty audio"}
+    config = load_app_config().server
+    uri = f"ws://127.0.0.1:{config.port}"
+    task_id = f"preview-{int(time.time() * 1000)}"
+    try:
+        async with ws_lib.connect(uri, max_size=None, open_timeout=20, ping_interval=20, ping_timeout=10) as websocket:
+            await websocket.send(json.dumps({
+                "type": "audio_start",
+                "task_id": task_id,
+                "sample_rate": int(sample_rate),
+            }, ensure_ascii=False))
+            await websocket.send(audio_data)
+            await websocket.send(json.dumps({
+                "type": "audio_end",
+                "task_id": task_id,
+                "sample_rate": int(sample_rate),
+            }, ensure_ascii=False))
+            response = await asyncio.wait_for(websocket.recv(), timeout=90)
+    except Exception as exc:
+        return {"ok": False, "text": "", "error": str(exc)}
+    try:
+        data = json.loads(response)
+    except json.JSONDecodeError:
+        return {"ok": False, "text": "", "error": "invalid recognition response"}
+    text = str(data.get("text") or "").strip()
+    return {
+        "ok": bool(text),
+        "text": text,
+        "error": str(data.get("error") or ""),
+        "model": str(data.get("model") or ""),
+    }
 
 
 @app.post("/api/audio/test-input")
 async def test_audio_input(req: AudioTestRequest):
-    return await asyncio.to_thread(_record_audio_test, req.device_index, req.seconds)
+    result = await asyncio.to_thread(_record_audio_test, req.device_index, req.seconds)
+    normalized_audio = result.pop("normalized_audio", b"")
+    if result.get("ok") and normalized_audio:
+        recognition = await _recognize_audio_preview(normalized_audio, int(result.get("sample_rate") or 48000))
+        result["recognized_text"] = recognition.get("text", "")
+        result["recognition_ok"] = recognition.get("ok", False)
+        result["recognition_error"] = recognition.get("error", "")
+        result["recognition_model"] = recognition.get("model", "")
+        if recognition.get("ok") and str(result.get("quality_state") or "") == "ok":
+            remember_capture_profile({
+                "device_name": result.get("device_name", ""),
+                "host_api": result.get("capture_host_api", ""),
+                "sample_rate": result.get("sample_rate", 0),
+                "capture_channels": result.get("capture_channels", 1),
+                "normalized_strategy": result.get("normalized_strategy", "mono"),
+                "normalized_channel_index": result.get("normalized_channel_index", -1),
+                "quality_state": result.get("quality_state", ""),
+                "recognized_text": recognition.get("text", ""),
+            }, reason="api_test_input")
+    return result
 
 
 def _capture_device_level(audio: Any, pyaudio_module: Any, device: dict, seconds: float, waveform_points: int) -> dict:
-    stream = None
     try:
-        sample_rate = int(device.get("default_sample_rate") or 48000)
-        chunk = max(240, min(2048, int(sample_rate * 0.02)))
-        stream = audio.open(
-            format=pyaudio_module.paInt16,
-            channels=1,
-            rate=sample_rate,
-            input=True,
-            input_device_index=int(device["index"]),
-            frames_per_buffer=chunk,
+        capture = capture_input_once(
+            audio,
+            pyaudio_module,
+            int(device["index"]),
+            seconds=seconds,
+            preferred_sample_rate=int(device.get("default_sample_rate") or 0),
+            configured_sample_rate=48000,
+            preferred_channels=2,
+            waveform_points=waveform_points,
+            logger=None,
         )
-        chunks = []
-        total_chunks = max(1, int(sample_rate / chunk * seconds))
-        for _ in range(total_chunks):
-            chunks.append(stream.read(chunk, exception_on_overflow=False))
-        data = b"".join(chunks)
-        level = measure_pcm16_level(data)
         return {
             **device,
-            **level,
+            **capture["audio_level"],
             "ok": True,
-            "message": "有声音" if level["has_signal"] else "太安静",
-            "waveform": pcm16_waveform(data, waveform_points),
+            "message": capture["message"],
+            "sample_rate": capture.get("sample_rate"),
+            "capture_host_api": capture.get("host_api", ""),
+            "capture_channels": capture.get("capture_channels"),
+            "normalized_channels": capture.get("normalized_channels"),
+            "normalized_strategy": capture.get("normalized_strategy"),
+            "normalized_channel_index": capture.get("normalized_channel_index"),
+            "channel_analysis": capture.get("channel_analysis", []),
+            "stereo_correlation": capture.get("stereo_correlation"),
+            "quality_state": capture.get("quality_state", ""),
+            "waveform": capture.get("waveform") or [],
         }
     except Exception as exc:
         return {
@@ -1078,15 +1109,9 @@ def _capture_device_level(audio: Any, pyaudio_module: Any, device: dict, seconds
             "peak": 0,
             "rms_ratio": 0.0,
             "peak_ratio": 0.0,
+            "quality_state": "too_quiet",
             "waveform": [0.0] * waveform_points,
         }
-    finally:
-        if stream is not None:
-            try:
-                stream.stop_stream()
-                stream.close()
-            except Exception:
-                pass
 
 
 def _scan_audio_levels(seconds: float, include_all: bool, waveform_points: int) -> dict:
