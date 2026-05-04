@@ -264,6 +264,14 @@ Microphone regression checks:
 4. For the laptop array microphone, validate in its normal physical position; do not require the same speaker-facing geometry as the external 3.5mm microphone.
 5. After a passing run, restart the runtime so the remembered capture profiles are picked up by the live recording client.
 
+Microphone format probe:
+
+```bat
+venv\Scripts\python.exe scripts\mic_format_probe.py --seconds 5
+```
+
+This records one sample from the selected input and writes comparison WAVs under ignored `data\mic_format_tests\YYYYMMDD-HHMMSS\`: raw capture, fixed channel mono candidates, and a `16kHz` mono ASR candidate. It also writes `result.json` with RMS/Peak metrics and Qwen3-ASR 1.7B recognition results unless `--no-asr` is passed. Use this when diagnosing whether the raw microphone level, channel choice, or ASR preprocessing is responsible for quiet/empty recognition.
+
 Special-key shortcut checks:
 
 1. Use Settings to record or enter `caps_lock`, click Save, then choose whether to restart the recording client.
