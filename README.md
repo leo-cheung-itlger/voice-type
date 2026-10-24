@@ -1,44 +1,84 @@
 # VoiceType
 
-Windows 本地语音输入工具。按住快捷键说话，松开后识别并输入文字；也可批量转录音视频，导出 TXT、JSON 和 SRT。
+<p align="center">
+  <img src="frontend/src-tauri/icons/icon.png" alt="VoiceType logo" width="128">
+</p>
 
-**当前为开发测试版，尚无通过全部验收的独立便携发行版。** 源码公开在 [GitHub](https://github.com/leo-cheung-itlger/voice-type)。Windows 10／11 干净环境、低配实机和真实快捷键到输入的便携包验收仍需完成。
+<p align="center">
+  <strong>Private, local voice input for Windows.</strong><br>
+  Hold a hotkey, speak, and get text at the cursor. Recognition runs on your own computer.
+</p>
 
-## 硬件与模型
+<p align="center">
+  <a href="README.zh-CN.md">阅读中文版</a> ·
+  <a href="https://github.com/leo-cheung-itlger/voice-type">GitHub repository</a>
+</p>
 
-| 环境 | 推荐模型 | 实际运行方式 |
+> **Alpha status:** VoiceType is an open source development test. A clean Windows 10/11 installation, low-end hardware coverage, and a one-click public installer are still being validated. Please treat this as an early test build rather than a finished release.
+
+## What VoiceType does
+
+VoiceType is a Windows desktop voice input tool. Press and hold your shortcut, speak naturally, release it, and the recognized text is inserted into the active application.
+
+- **Local recognition:** audio is processed on your computer by default.
+- **Beginner-first setup:** choose a language, download a recommended model, and start speaking.
+- **Automatic hardware choice:** CPU is the fallback; compatible NVIDIA CUDA hardware can use an optional GPU runtime.
+- **Native desktop app:** the release build opens as a Tauri window and can stay in the system tray. The browser port is for development only.
+- **File transcription:** audio and video transcription is available when the optional FFmpeg component is installed.
+
+## Current preview
+
+![VoiceType current interface preview](voicetype-validation.png)
+
+This image shows the current development interface. It is included to show the product direction; it is not a promise that every item shown has passed clean-machine release acceptance.
+
+## Try it
+
+The public repository currently contains source code and development instructions. A tested, standalone installer is not published yet.
+
+1. Use Windows x64 with Python 3.12, Node.js, and npm.
+2. Create the CPU development environment using the commands in [RUNBOOK.md](RUNBOOK.md).
+3. Start the development UI, open the local page, and download a model from **Settings → Recognition**.
+4. Keep the default language as **Mandarin** unless you have a reason to change it.
+5. Hold the configured shortcut, speak, and release it to insert the result.
+
+The production desktop build is launched with `VoiceType.exe`. `start-live-ui.ps1` and `http://127.0.0.1:55343` are development-only entry points.
+
+## Models and hardware
+
+| Computer | Recommended model | Runtime |
 | --- | --- | --- |
-| 无独显、AMD／Intel 显卡、CUDA 不可用 | SenseVoice INT8 | CPU |
-| 中文低延迟输入 | Paraformer 中文 | CPU，自动识别中英，不支持强制指定语言 |
-| NVIDIA CUDA 可用 | Qwen3-ASR 0.6B | CUDA；需要可选 GPU 运行组件 |
-| 更重视质量 | Qwen3-ASR 1.7B | 手动选择，内存／显存需求更高 |
+| No NVIDIA GPU, AMD/Intel GPU, or CUDA unavailable | SenseVoice INT8 | CPU |
+| Compatible NVIDIA CUDA available | Qwen3-ASR 0.6B | Optional CUDA runtime |
+| Higher recognition quality | Qwen3-ASR 1.7B | Manual choice; higher memory use |
+| File transcription on a small CPU machine | Paraformer Chinese | CPU; language constraint is limited |
 
-不支持 AMD／Intel GPU 加速。GGUF、Vulkan 和 FunASR Nano 后端仍在开发中，界面禁止选择和下载。尚未公布最低内存／显存配置；不能把开发电脑上的速度视为低配性能保证。
+The default mode is **Automatic**. If a GPU component or GPU model fails to load, VoiceType reports the reason and can fall back to an installed SenseVoice CPU model. GPU components are downloaded only after the user confirms.
 
-SenseVoice 的官方 ONNX 模型支持普通话、英语、粤语、日语、韩语：[模型说明](https://k2-fsa.github.io/sherpa/onnx/sense-voice/pretrained.html)。首次下载约 163 MB，安装后模型文件约 228 MiB。Qwen 权重约 1.3 GB／3.5 GB，界面显示的值为估计，实际下载进度使用文件清单。
+Model downloads use a verified ModelScope file manifest first when available, then fall back to the official Hugging Face source. Files are checked with SHA-256. GGUF, Vulkan, and FunASR Nano backends remain disabled because their runtime is not implemented yet.
 
-## 使用流程
+Supported recognition language choices currently include Mandarin, automatic detection, English, Cantonese, Japanese, and Korean. This setting controls recognition; it is not a translation feature.
 
-1. 打开应用，在“设置 → 识别设置”查看推荐，点击下载或导入对应模型。打开界面无需先加载模型。
-2. 选择“自动选择／CPU／NVIDIA GPU”和“识别语言”，点击“应用并重启识别”。默认语言是普通话；自动检测不强制语言。
-3. 按住设置中的快捷键说话，松开后输入。录音、识别和转录期间不能切换模型。
-4. 在“转录”选择文件。任务保存创建时的模型、语言和硬件策略；更换模型的文件任务会暂停快捷键输入，完成后恢复原服务。
+## Privacy
 
-“自动选择”允许 Qwen 加载失败后使用已安装的 SenseVoice CPU 模型，并显示失败原因。没有 CPU 模型时会提示下载。手动选择 NVIDIA GPU 时，CUDA 不可用会明确失败。原来的显式 CPU／严格 GPU 配置会保留。
+- Default speech recognition stays on the local machine.
+- Model downloads need network access to the listed model sources.
+- Optional AI polishing in file transcription sends text only to the service configured by the user.
+- Portable data, downloaded models, recordings, and logs stay in the application's data directories.
 
-语言选项用于语音识别，不提供翻译。指定普通话是否提高准确率或速度需要按自己的音频验证。
+## Known limits
 
-便携包用户无需安装系统 Python、PyTorch 或 .NET SDK。若 Windows 缺少 WebView2，请安装 [Microsoft 官方 WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section)，然后重新打开应用。Windows 语音增强不可用时会退回基础录音。
+- AMD/Intel GPU acceleration is not supported yet.
+- Low-end physical hardware and clean Windows 10/11 machines still need dedicated acceptance testing.
+- The repository does not currently publish a guaranteed minimum RAM or VRAM requirement.
+- The source tree is public, but the project license has not been selected yet. Public visibility does not grant redistribution rights.
 
-## 数据与隐私
+## Build from source
 
-默认音频识别在本机进行。模型下载需要连接 GitHub 或 Hugging Face；只有启用文件转录的 AI 润色时，文本才会发送到用户配置的服务。
+<details>
+<summary>Developer setup</summary>
 
-便携目录中的 `data/` 保存设置、历史、上传缓存和录音，`models/` 保存下载的模型，`logs/` 保存诊断日志。导入的模型保留在原目录，移动应用时需一并处理。不要把这些目录和 API key 提交到 Git。
-
-## 源码开发
-
-需要 Windows x64、Python 3.12、Node.js 和 npm。构建桌面壳另需 Rust、MSVC Build Tools；构建录音增强组件另需 .NET SDK，最终用户无需安装 SDK。
+Requirements: Windows x64, Python 3.12, Node.js/npm, Rust and MSVC Build Tools for the Tauri shell. The optional Windows capture helper is built separately with .NET SDK; end users do not need the SDK.
 
 ```powershell
 python -m venv venv
@@ -49,12 +89,25 @@ cd ..
 .\scripts\start-dev.ps1
 ```
 
-浏览器打开 [本地界面](http://127.0.0.1:55343/#/)，然后在设置下载模型。CPU 基础依赖不安装 PyTorch。开发环境启用 Qwen：
+For Qwen CUDA development, install the separately locked CUDA environment:
 
 ```powershell
 .\venv\Scripts\python.exe -m pip install --require-hashes -r requirements-cuda.lock --extra-index-url https://download.pytorch.org/whl/cu128
 ```
 
-开发模型默认放在项目相邻的 `models/`，便携模式使用发布目录内的 `models/`。可用 `VOICETYPE_MODELS_DIR`、`VOICETYPE_DATA_DIR` 指定位置。
+The CPU runtime does not include PyTorch. SciPy is kept in `requirements-dev.txt` for microphone diagnostics only. FFmpeg is optional; include it in a portable build with:
 
-完整操作、构建和验收命令见 [RUNBOOK](RUNBOOK.md)，最新验证范围见 [PROJECT_STATUS](PROJECT_STATUS.md)，依赖和模型许可见 [THIRD_PARTY](THIRD_PARTY.md)。本仓库尚未指定项目源码许可证；公开可读不代表已授权任意再分发。
+```powershell
+python scripts/build_portable.py --include-ffmpeg --exe path\to\VoiceType.exe
+```
+
+See [RUNBOOK.md](RUNBOOK.md) for validation and packaging details.
+
+</details>
+
+## Documentation
+
+- [中文说明](README.zh-CN.md)
+- [Project status and acceptance limits](PROJECT_STATUS.md)
+- [Build and validation runbook](RUNBOOK.md)
+- [Third-party components and licenses](THIRD_PARTY.md)

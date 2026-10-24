@@ -208,8 +208,8 @@ fn main() {
                 let _ = app.emit("runtime-toast", message);
             }
 
-            let show = MenuItemBuilder::with_id("show", "Show VoiceType").build(app)?;
-            let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            let show = MenuItemBuilder::with_id("show", "打开 VoiceType").build(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
 
             let mut tray = TrayIconBuilder::new()

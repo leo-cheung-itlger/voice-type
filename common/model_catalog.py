@@ -3,6 +3,10 @@ from pathlib import Path
 
 LANGUAGES = {"zh": "普通话", "auto": "自动检测", "en": "英语", "yue": "粤语", "ja": "日语", "ko": "韩语"}
 QWEN_LANGUAGES = {"zh": "Chinese", "auto": None, "en": "English", "yue": "Cantonese", "ja": "Japanese", "ko": "Korean"}
+# ModelScope is only used for hub models whose repository is mirrored with the
+# same file names.  The downloader still verifies every file hash and falls
+# back to Hugging Face when the mirror manifest is unavailable.
+MODEL_SOURCE_POLICY = ("modelscope", "huggingface")
 CATALOG = {
     "sensevoice": {
         "name": "SenseVoice INT8", "directory": "SenseVoice-Small", "backend": "sherpa-onnx",
@@ -63,3 +67,17 @@ def model_web_url(model: str) -> str:
     if spec.get("hub"):
         return f"https://huggingface.co/{spec['hub']}"
     return "https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models"
+
+
+def model_sources(model: str) -> list[dict]:
+    """Return safe, non-user-editable source hints for the model catalog."""
+    spec = CATALOG[model]
+    if not spec.get("implemented"):
+        return []
+    if spec.get("hub"):
+        hub = spec["hub"]
+        return [
+            {"id": "modelscope", "name": "ModelScope 国内镜像", "base_url": f"https://modelscope.cn/models/{hub}/resolve/master/"},
+            {"id": "huggingface", "name": "Hugging Face 官方源", "base_url": f"https://huggingface.co/{hub}/resolve/main/"},
+        ]
+    return [{"id": "sherpa-onnx", "name": "Sherpa-ONNX 官方源", "base_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"}]

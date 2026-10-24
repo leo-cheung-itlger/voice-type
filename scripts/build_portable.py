@@ -85,6 +85,7 @@ def main():
     parser.add_argument("--version", default="1.0.0-alpha.1")
     parser.add_argument("--exe", type=Path, required=True)
     parser.add_argument("--cuda", action="store_true")
+    parser.add_argument("--include-ffmpeg", action="store_true", help="Include the optional file-transcription component")
     parser.add_argument("--installed", action="store_true", help="Use the locked local environment after checking installed RECORD hashes")
     args = parser.parse_args()
     if sys.version_info[:2] != (3, 12) or sys.maxsize < 2**32:
@@ -103,19 +104,20 @@ def main():
         target = out / "scripts" / name
         target.parent.mkdir(exist_ok=True)
         shutil.copy2(ROOT / "scripts" / name, target)
-    # FFmpeg is a separate process. Preserve the distribution's license and source notice.
-    ffmpeg = ROOT / "tools/ffmpeg"
-    if not (ffmpeg / "LICENSE.txt").exists() or not (ffmpeg / "SOURCE.txt").exists():
-        raise RuntimeError("FFmpeg redistribution needs LICENSE.txt and exact SOURCE.txt")
-    for source in (ffmpeg / "bin/ffmpeg.exe", ffmpeg / "bin/ffprobe.exe", ffmpeg / "LICENSE.txt", ffmpeg / "SOURCE.txt"):
-        target = out / "tools/ffmpeg" / source.relative_to(ffmpeg)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+    # FFmpeg is deliberately optional: it is only needed for file
+    # transcription and can be shipped as a separately consented component.
+    if args.include_ffmpeg:
+        ffmpeg = ROOT / "tools/ffmpeg"
+        if not (ffmpeg / "LICENSE.txt").exists() or not (ffmpeg / "SOURCE.txt").exists():
+            raise RuntimeError("FFmpeg redistribution needs LICENSE.txt and exact SOURCE.txt")
+        for source in (ffmpeg / "bin/ffmpeg.exe", ffmpeg / "bin/ffprobe.exe", ffmpeg / "LICENSE.txt", ffmpeg / "SOURCE.txt"):
+            target = out / "tools/ffmpeg" / source.relative_to(ffmpeg)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
     helper = ROOT / "tools/windows_voice_capture/publish"
-    if not (helper / "VoiceCaptureHelper.exe").is_file():
-        raise RuntimeError("Publish the self-contained Windows capture helper first")
-    shutil.copytree(helper, out / "tools/windows_voice_capture/publish")
-    (out / "portable.json").write_text(json.dumps({"version": args.version, "platform": "windows-x64", "python": "3.12.10", "data": "data", "models": "models"}), encoding="utf-8")
+    if helper.joinpath("VoiceCaptureHelper.exe").is_file():
+        shutil.copytree(helper, out / "tools/windows_voice_capture/publish")
+    (out / "portable.json").write_text(json.dumps({"version": args.version, "platform": "windows-x64", "python": "3.12.10", "data": "data", "models": "models", "optional_components": {"ffmpeg": args.include_ffmpeg, "windows_voice_capture": helper.joinpath("VoiceCaptureHelper.exe").is_file()}}, ensure_ascii=False), encoding="utf-8")
     runtime(out / "runtime", installed=args.installed)
     archive = out.with_name(out.name + ".zip")
     archive_tree(out, archive)

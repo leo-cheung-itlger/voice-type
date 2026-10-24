@@ -2,7 +2,7 @@
   <div class="view">
     <section id="models" class="section" tabindex="-1" aria-label="识别模型">
       <div class="section-title"><span>识别设置</span><button class="btn btn-small btn-ghost" @click="refreshModels">刷新</button></div>
-      <p class="label model-help">{{ store.accelerationRecommendation.reason }}。模型需由你点击下载。</p>
+      <p class="label model-help">{{ store.hardware?.recommendation || store.accelerationRecommendation.reason }} {{ store.hardware?.recommendation_reason || '' }} 模型会在你确认后下载。</p>
       <div class="panel">
         <label class="row setting-row"><span class="value">运行方式</span>
           <select v-model="draftMode" class="field compact" :disabled="settingsLocked"><option value="auto">自动选择</option><option value="cpu">CPU</option><option value="cuda">NVIDIA GPU</option></select>
@@ -13,13 +13,13 @@
         <div v-if="draftSpec && !draftSpec.language_hint" class="row label">此模型自动识别中文和英语，不支持强制指定语言；上述选择不会施加语言约束。</div>
         <div class="row"><span class="label">已配置：{{ store.selectedModel?.name }} · {{ languageNames[store.config.server.language] }}<br>正在使用：{{ store.runtime.loaded ? store.activeModelLabel : '未加载' }}</span></div>
       </div>
-      <div v-if="!store.hardware?.torch.cuda_available && store.cudaComponent.portable" class="panel">
+      <div v-if="store.hardware?.nvidia_gpu && !store.hardware?.torch.cuda_available && store.cudaComponent.portable" class="panel">
         <div class="row"><span><span class="value">可选 GPU 运行组件</span><span class="label">仅 NVIDIA 用户需要，下载体积见进度；CPU 模型无需安装。</span></span><button class="btn btn-small" :disabled="store.cudaComponent.status === 'running'" @click="store.installCudaComponent()">{{ store.cudaComponent.status === 'running' ? '下载中' : '下载组件' }}</button></div>
         <p class="label">{{ store.cudaComponent.error || store.cudaComponent.message }} <template v-if="store.cudaComponent.total_bytes">{{ formatSize(store.cudaComponent.downloaded_bytes || 0) }} / {{ formatSize(store.cudaComponent.total_bytes) }}</template></p>
       </div>
       <div class="model-list">
         <div v-for="model in store.models" :key="model.id" class="model-row" :class="{active: draftModel === model.id}">
-          <span><strong>{{ model.name }}</strong><small>{{ modelSummary(model) }}</small><small v-if="model.implemented && !model.exists">下载约 {{ formatSize(model.download_bytes) }} · {{ model.path }}</small></span>
+          <span><strong>{{ model.name }}</strong><small>{{ modelSummary(model) }}</small><small v-if="model.implemented && !model.exists">下载约 {{ formatSize(model.download_bytes) }}</small></span>
           <div class="model-actions">
             <button v-if="model.implemented && !model.exists" class="btn btn-small btn-ghost" @click="downloadModel = model">下载</button>
             <button v-if="model.implemented" class="btn btn-small btn-ghost" @click="importingModel = model; importDirectory = ''">导入</button>
@@ -194,7 +194,7 @@
         <div>
           <div class="value">下载 {{ downloadModel.name }}</div>
           <div class="label">{{ downloadHint(downloadModel) }}</div>
-          <div class="label">安装位置：{{ downloadJob(downloadModel)?.target_dir || downloadModel.path }}</div>
+          <div class="label">国内镜像可用时优先使用，校验失败会回退官方源。</div>
         </div>
         <button
           v-if="downloadModel.modelscope_id"
@@ -507,7 +507,7 @@ function modelSummary(model: ModelEntry) {
   return [model.active ? '正在使用 · 加载成功' : model.exists ? '已安装 · 未加载' : '未安装', modelCompatible(model) ? '环境兼容' : '当前运行方式不兼容', model.id === store.accelerationRecommendation.model ? '推荐' : ''].filter(Boolean).join(' · ')
 }
 function downloadHint(model: ModelEntry) {
-  return `${model.backend === 'sherpa-onnx' ? '官方 ONNX INT8 模型' : '官方 Qwen 权重'}，下载约 ${formatSize(model.download_bytes)}。失败后可重试。`
+  return `${model.backend === 'sherpa-onnx' ? 'ONNX INT8 模型' : 'Qwen 模型权重'}，下载约 ${formatSize(model.download_bytes)}。失败后可重试。`
 }
 
 function downloadJob(model: ModelEntry) {
@@ -526,7 +526,7 @@ function downloadStatusText(model: ModelEntry) {
   if (!job) return ''
   if (job.status === 'error') return job.error || '下载失败'
   if (job.status === 'running') return `${job.message || '正在下载'} · ${formatSize(job.downloaded_bytes || 0)} / ${formatSize(job.total_bytes || model.download_bytes)}`
-  if (job.status === 'done' || job.status === 'installed') return job.message || '下载完成'
+  if (job.status === 'done' || job.status === 'installed') return `${job.message || '下载完成'}${job.source ? ` · ${job.source}` : ''}`
   return job.message || ''
 }
 

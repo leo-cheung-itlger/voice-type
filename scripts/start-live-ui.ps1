@@ -1,3 +1,5 @@
+# 开发入口：仅用于 Vite 浏览器联调。发行包请双击 VoiceType.exe，
+# 它会打开 Tauri 原生窗口并把运行时放到托盘。
 param(
     [string]$Root = (Split-Path -Parent $PSScriptRoot),
     [string]$Route = "/#/",

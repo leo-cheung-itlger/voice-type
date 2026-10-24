@@ -35,7 +35,7 @@ from common.history import HistoryManager
 from common.hotword import HotwordManager
 from common.logger import setup_logger
 from common.activity import activity, activities
-from common.model_catalog import CATALOG, LANGUAGES, model_installed, model_web_url, validate_model
+from common.model_catalog import CATALOG, LANGUAGES, model_installed, model_sources, model_web_url, validate_model
 from common.model_download import jobs as model_download_jobs, start_download, import_model
 from common.runtime_policy import cuda_status, python_for_model, runtime_state
 from common import components
@@ -573,6 +573,7 @@ def _model_entries() -> list:
             "implemented": spec["implemented"], "backend": spec["backend"], "role": spec.get("role", ""),
             "languages": spec["languages"], "language_hint": spec.get("language_hint", False),
             "download_bytes": spec.get("download_bytes", 0), "download_url": model_web_url(model),
+            "sources": model_sources(model),
             "modelscope_id": spec.get("hub", "official-onnx" if spec["implemented"] else ""),
             "loaded": bool(state.get("loaded") and state.get("active_model") == model),
             "active": bool(state.get("loaded") and state.get("active_model") == model),
@@ -1758,11 +1759,18 @@ async def get_hardware():
     diagnostics = _runtime_diagnostics()
     torch = diagnostics["torch"]
     nvidia = diagnostics["nvidia"]
-    recommendation = "GPU 组件不可用，推荐 SenseVoice INT8，使用 CPU"
+    recommendation = "未检测到可用 NVIDIA CUDA，推荐 SenseVoice INT8，使用 CPU。"
+    recommended_model = "sensevoice"
+    recommended_mode = "cpu"
+    reason = "CPU 方案不需要安装显卡组件，适合无独显或显存不足的电脑。"
     if torch["cuda_available"]:
-        recommendation = "PyTorch CUDA 可用，可以继续测试 Qwen CUDA 推理耗时。"
-    elif not nvidia.get("available"):
-        recommendation = "未检测到 NVIDIA GPU，建议使用低延迟模型作为日用候选。"
+        recommendation = "检测到可用 NVIDIA CUDA，推荐 Qwen3-ASR 0.6B。"
+        recommended_model = "qwen3-asr-0.6b"
+        recommended_mode = "auto"
+        reason = "可选安装 GPU 运行组件；如果安装或加载失败，会自动回退到 SenseVoice CPU。"
+    elif nvidia.get("available"):
+        recommendation = "检测到 NVIDIA 显卡，但 CUDA 运行组件不可用，推荐 SenseVoice INT8。"
+        reason = "先使用 CPU 完成识别；可在高级设置中安装并验证 GPU 组件。"
     return {
         "cpu": os.environ.get("PROCESSOR_IDENTIFIER", ""),
         "memory_gb": _memory_gb(),
@@ -1776,6 +1784,10 @@ async def get_hardware():
         "blockers": diagnostics["blockers"],
         "runtime_ready": diagnostics["runtime_ready"],
         "recommendation": recommendation,
+        "recommended_model": recommended_model,
+        "recommended_mode": recommended_mode,
+        "recommendation_reason": reason,
+        "source_policy": ["ModelScope 国内镜像（有可验证文件时）", "Hugging Face 官方源（回退）"],
         "ports": {
             "asr": DEFAULT_ASR_PORT,
             "api": DEFAULT_API_PORT,

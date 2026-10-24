@@ -127,7 +127,7 @@ function updateStartupState() {
     startupVisible.value = false
   } else {
     startupStage.value = '连接本地服务'
-    startupDetail.value = '首次启动无需先下载模型'
+    startupDetail.value = '首次启动可在设置中下载推荐模型，完成后即可开始录音'
   }
 }
 

@@ -22,6 +22,7 @@ TRANSCRIPTION_DB = os.path.join(DATA_DIR, "transcriptions.json")
 LLM_CONFIG_FILE = os.path.join(DATA_DIR, "llm_config.json")
 UPLOAD_DIR = os.path.join(DATA_DIR, "transcription_uploads")
 LOCAL_FFMPEG_DIR = os.path.join(BASE_DIR, "tools", "ffmpeg", "bin")
+OPTIONAL_FFMPEG_DIR = os.path.join(DATA_DIR, "components", "ffmpeg", "bin")
 
 SUPPORTED_EXTENSIONS = {
     ".mp3",
@@ -83,24 +84,30 @@ def save_llm_config(values: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def ffmpeg_status() -> Dict[str, Any]:
-    local_ffmpeg = os.path.join(LOCAL_FFMPEG_DIR, "ffmpeg.exe")
-    local_ffprobe = os.path.join(LOCAL_FFMPEG_DIR, "ffprobe.exe")
+    local_ffmpeg = next((path for path in (
+        os.path.join(OPTIONAL_FFMPEG_DIR, "ffmpeg.exe"),
+        os.path.join(LOCAL_FFMPEG_DIR, "ffmpeg.exe"),
+    ) if os.path.exists(path)), "")
+    local_ffprobe = next((path for path in (
+        os.path.join(OPTIONAL_FFMPEG_DIR, "ffprobe.exe"),
+        os.path.join(LOCAL_FFMPEG_DIR, "ffprobe.exe"),
+    ) if os.path.exists(path)), "")
     ffmpeg_path = (
         os.environ.get("VOICETYPE_FFMPEG_PATH")
         or shutil.which("ffmpeg")
-        or (local_ffmpeg if os.path.exists(local_ffmpeg) else "")
+        or local_ffmpeg
     )
     ffprobe_path = (
         os.environ.get("VOICETYPE_FFPROBE_PATH")
         or shutil.which("ffprobe")
-        or (local_ffprobe if os.path.exists(local_ffprobe) else "")
+        or local_ffprobe
     )
     return {
         "available": bool(ffmpeg_path),
         "ffmpeg": ffmpeg_path or "",
         "ffprobe": ffprobe_path or "",
         "supported_extensions": sorted(SUPPORTED_EXTENSIONS),
-        "message": "ffmpeg 可用" if ffmpeg_path else "未检测到 ffmpeg。请安装 ffmpeg，或设置 VOICETYPE_FFMPEG_PATH。",
+        "message": "ffmpeg 可用" if ffmpeg_path else "未安装文件转录组件。可在高级设置安装 FFmpeg，或设置 VOICETYPE_FFMPEG_PATH。",
     }
 
 

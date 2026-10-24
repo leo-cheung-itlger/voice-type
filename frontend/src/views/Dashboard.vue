@@ -13,6 +13,14 @@
       </div>
     </section>
 
+    <section v-if="store.selectedModel && !store.selectedModel.exists" class="section setup-card">
+      <div>
+        <div class="value">还没有安装识别模型</div>
+        <div class="service-detail">{{ store.hardware?.recommendation || '建议先安装 SenseVoice INT8，使用 CPU 即可开始。' }}</div>
+      </div>
+      <button class="btn btn-primary" @click="openSettings">去设置下载</button>
+    </section>
+
     <section class="section">
       <div class="section-title">
         <span>服务</span>
@@ -22,7 +30,7 @@
         <div class="row">
           <div>
             <div class="value">语音识别</div>
-            <div class="service-detail" :title="store.serverPid ? `进程 ID：${store.serverPid}` : ''">{{ serverLabel }}</div>
+            <div class="service-detail">{{ serverLabel }}</div>
           </div>
           <button
             class="btn btn-small"
@@ -36,7 +44,7 @@
         <div class="row">
           <div>
             <div class="value">快捷键录音</div>
-            <div class="service-detail" :title="store.clientPid ? `进程 ID：${store.clientPid}` : ''">{{ clientLabel }}</div>
+            <div class="service-detail">{{ clientLabel }}</div>
           </div>
           <button class="btn btn-small" :class="store.clientRunning ? 'btn-danger' : 'btn-primary'" @click="toggleClient">
             {{ store.clientRunning ? '停止' : '启动' }}
@@ -114,10 +122,12 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import type { HistoryEntry } from '../stores/app'
 
 const store = useAppStore()
+const router = useRouter()
 const recentEntries = computed(() => store.history.slice(-10).reverse())
 const serverLabel = computed(() => {
   if (store.serverConflict) return `发现 ${store.serverProcessCount} 个实例或端口冲突`
@@ -154,6 +164,10 @@ async function toggleClient() {
   else await store.startClient()
 }
 
+function openSettings() {
+  router.push('/settings')
+}
+
 function formatDuration(entry: HistoryEntry) {
   return `${Number(entry.duration_seconds ?? entry.delay ?? 0).toFixed(1)}s`
 }
@@ -167,6 +181,17 @@ function formatDuration(entry: HistoryEntry) {
   border: 1px solid rgba(125, 220, 155, 0.24);
   border-radius: 14px;
   background: linear-gradient(180deg, rgba(125, 220, 155, 0.08), rgba(24, 27, 25, 0.9));
+}
+
+.setup-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgba(125, 220, 155, 0.28);
+  border-radius: 14px;
+  background: rgba(125, 220, 155, 0.06);
 }
 
 .live-text {

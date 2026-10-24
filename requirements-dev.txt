@@ -1,0 +1,3 @@
+# Optional microphone diagnostic dependency.  The shipped runtime uses the
+# capture path without SciPy; install this file only when running probes.
+scipy==1.17.1

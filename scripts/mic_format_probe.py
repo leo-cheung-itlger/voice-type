@@ -89,12 +89,18 @@ def mix_to_mono_float(raw_audio: bytes, channels: int):
 def resample_float(audio: Any, source_rate: int, target_rate: int):
     if int(source_rate) == int(target_rate):
         return audio
-    from scipy.signal import resample_poly
-
+    # Keep SciPy optional: this probe is a developer diagnostic, while the
+    # shipped CPU runtime must not carry its large native wheel.  NumPy's
+    # interpolation is sufficient for the short microphone probe.
+    try:
+        from scipy.signal import resample_poly
+    except ImportError:
+        import numpy as np
+        source = np.asarray(audio, dtype=np.float32)
+        length = max(1, round(len(source) * int(target_rate) / int(source_rate)))
+        return np.interp(np.linspace(0, len(source) - 1, length), np.arange(len(source)), source)
     divisor = math.gcd(int(source_rate), int(target_rate))
-    up = int(target_rate) // divisor
-    down = int(source_rate) // divisor
-    return resample_poly(audio, up, down)
+    return resample_poly(audio, int(target_rate) // divisor, int(source_rate) // divisor)
 
 
 def float_to_pcm16_bytes(audio: Any) -> bytes:

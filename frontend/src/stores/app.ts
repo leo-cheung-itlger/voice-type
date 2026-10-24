@@ -79,6 +79,7 @@ export interface ModelEntry {
   acceleration?: string
   download_url?: string
   modelscope_id?: string
+  sources?: { id: string; name: string; base_url: string }[]
   blocking_reason?: string
   gpu_required_supported?: boolean
   recommended_for?: string[]
@@ -116,6 +117,9 @@ export interface ModelDownloadJob {
   returncode?: number | null
   message?: string
   error?: string
+  source?: string
+  source_id?: string
+  source_policy?: { id: string; name: string; base_url: string }[]
 }
 
 export interface HardwareInfo {
@@ -142,6 +146,10 @@ export interface HardwareInfo {
   blockers?: string[]
   runtime_ready?: boolean
   recommendation: string
+  recommended_model?: string
+  recommended_mode?: 'auto' | 'cpu' | 'cuda'
+  recommendation_reason?: string
+  source_policy?: string[]
 }
 
 export interface AccelerationState {
@@ -493,16 +501,16 @@ export const useAppStore = defineStore('app', () => {
   const selectedModel = computed(() => models.value.find((model) => model.id === config.value.server.model) || null)
   const accelerationState = computed<AccelerationState>(() => {
     const cuda = runtime.value.loaded && runtime.value.actual_device === 'cuda'
-    return { label: runtime.value.loaded ? (cuda ? 'CUDA' : 'CPU') : '未加载',
-      detail: runtime.value.fallback_reason ? `已回退 CPU：${runtime.value.fallback_reason}` : runtime.value.loaded ? `${cuda ? 'CUDA' : 'CPU'} · ${models.value.find(m => m.id === runtime.value.active_model)?.name || runtime.value.active_model}` : '选择模型后启动识别',
+    return { label: runtime.value.loaded ? (cuda ? 'GPU 加速' : 'CPU 运行') : '未加载',
+      detail: runtime.value.fallback_reason ? `已切换到 CPU 方案：${runtime.value.fallback_reason}` : runtime.value.loaded ? `当前模型：${models.value.find(m => m.id === runtime.value.active_model)?.name || runtime.value.active_model}` : '选择模型后启动识别',
       active: Boolean(runtime.value.loaded), backend: cuda ? 'cuda' : 'cpu', cudaReady: Boolean(hardware.value?.torch.cuda_available),
       vulkanSelected: false, blocks: [] }
   })
   const accelerationRecommendation = computed<AccelerationRecommendation>(() => {
     const cuda = Boolean(hardware.value?.torch.cuda_available)
-    const model = cuda ? 'qwen3-asr-0.6b' : 'sensevoice'
-    return { model, modelName: cuda ? 'Qwen3-ASR 0.6B' : 'SenseVoice INT8', gpu: cuda, gpu_backend: 'cuda',
-      reason: cuda ? 'CUDA 运行环境可用，推荐日常使用 Qwen 0.6B' : '无需独立显卡，使用 CPU 即可识别五种语言', benchmarkSeconds: null }
+    const model = hardware.value?.recommended_model || (cuda ? 'qwen3-asr-0.6b' : 'sensevoice')
+    return { model, modelName: model === 'qwen3-asr-0.6b' ? 'Qwen3-ASR 0.6B' : 'SenseVoice INT8', gpu: cuda, gpu_backend: 'cuda',
+      reason: hardware.value?.recommendation_reason || (cuda ? 'CUDA 运行环境可用，推荐日常使用 Qwen 0.6B' : '无需独立显卡，使用 CPU 即可识别五种语言'), benchmarkSeconds: null }
   })
   const activeModelLabel = computed(() => {
     const active = runtime.value.loaded ? runtime.value.active_model : config.value.server.model
