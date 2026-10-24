@@ -495,7 +495,7 @@ export const useAppStore = defineStore('app', () => {
     const cuda = runtime.value.loaded && runtime.value.actual_device === 'cuda'
     return { label: runtime.value.loaded ? (cuda ? 'CUDA' : 'CPU') : '未加载',
       detail: runtime.value.fallback_reason ? `已回退 CPU：${runtime.value.fallback_reason}` : runtime.value.loaded ? `${cuda ? 'CUDA' : 'CPU'} · ${models.value.find(m => m.id === runtime.value.active_model)?.name || runtime.value.active_model}` : '选择模型后启动识别',
-      active: Boolean(cuda), backend: cuda ? 'cuda' : 'cpu', cudaReady: Boolean(hardware.value?.torch.cuda_available),
+      active: Boolean(runtime.value.loaded), backend: cuda ? 'cuda' : 'cpu', cudaReady: Boolean(hardware.value?.torch.cuda_available),
       vulkanSelected: false, blocks: [] }
   })
   const accelerationRecommendation = computed<AccelerationRecommendation>(() => {
