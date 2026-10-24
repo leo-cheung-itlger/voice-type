@@ -31,7 +31,9 @@ VoiceType 是一个 Windows 桌面语音输入工具。按住快捷键说话，�
 
 ## 当前使用方式
 
-目前公开仓库主要提供源码和开发说明，经过完整验收的独立安装包还没有发布。
+**项目地址：** [github.com/leo-cheung-itlger/voice-type](https://github.com/leo-cheung-itlger/voice-type)
+
+目前公开仓库主要提供源码和开发说明，经过完整验收的独立安装包还没有发布。如果你平时不安装 Python 或开发工具，请先不要下载源码压缩包，等我发布可以直接打开的 Windows 测试包。
 
 1. 准备 Windows x64、Python 3.12、Node.js 和 npm。
 2. 按 [RUNBOOK.md](RUNBOOK.md) 创建 CPU 开发环境。

@@ -34,7 +34,9 @@ This image shows the current development interface. It is included to show the p
 
 ## Try it
 
-The public repository currently contains source code and development instructions. A tested, standalone installer is not published yet.
+**Project page:** [github.com/leo-cheung-itlger/voice-type](https://github.com/leo-cheung-itlger/voice-type)
+
+The public repository currently contains source code and development instructions. A tested, standalone installer is not published yet. If you do not normally install Python or developer tools, please wait for the first ready-to-run Windows package instead of downloading the source ZIP.
 
 1. Use Windows x64 with Python 3.12, Node.js, and npm.
 2. Create the CPU development environment using the commands in [RUNBOOK.md](RUNBOOK.md).
