@@ -1,80 +1,28 @@
-param(
-    [string]$Root = (Split-Path -Parent $PSScriptRoot)
-)
-
+﻿param([string]$Root = (Split-Path -Parent $PSScriptRoot))
 $ErrorActionPreference = "Stop"
-$rootPath = (Resolve-Path $Root).Path.TrimEnd("\")
-$logsPath = Join-Path $rootPath "logs"
-$python = Join-Path $rootPath "venv\Scripts\python.exe"
-$apiUrl = "http://127.0.0.1:55342"
-
-if (-not (Test-Path $python)) {
-    throw "Python venv not found: $python"
-}
-
-New-Item -ItemType Directory -Force -Path $logsPath | Out-Null
-
-$stopScript = Join-Path $PSScriptRoot "stop-dev.ps1"
-if (Test-Path $stopScript) {
-    & $stopScript -Root $rootPath | Out-Null
-    Start-Sleep -Seconds 1
-}
-
-foreach ($port in @(55341, 55342, 55343)) {
-    $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-    if ($listener) {
-        $owners = ($listener | Select-Object -ExpandProperty OwningProcess -Unique) -join ", "
-        throw "Port $port is still occupied by PID(s): $owners"
-    }
-}
-
-$apiReady = $false
+$rootPath = (Resolve-Path -LiteralPath $Root).Path
+$python = Join-Path $rootPath "runtime\python.exe"
+if (-not (Test-Path -LiteralPath $python)) { $python = Join-Path $rootPath "venv\Scripts\python.exe" }
+if (-not (Test-Path -LiteralPath $python)) { throw "Application Python is missing. Extract the complete portable package." }
+$logs = Join-Path $rootPath "logs"
+New-Item -ItemType Directory -Force -Path $logs | Out-Null
 try {
-    Invoke-RestMethod -Uri "$apiUrl/api/status" -TimeoutSec 2 | Out-Null
-    $apiReady = $true
+    $response = Invoke-RestMethod "http://127.0.0.1:55342/api/identity" -TimeoutSec 3
+    if ($response.root -eq $rootPath) { exit 0 }
+    throw "Port 55342 belongs to another VoiceType directory. Close that copy first."
 } catch {
-    $apiReady = $false
-}
-
-if (-not $apiReady) {
-    Start-Process `
-        -FilePath $python `
-        -ArgumentList @("api\api_server.py") `
-        -WorkingDirectory $rootPath `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput (Join-Path $logsPath "api_stdout.log") `
-        -RedirectStandardError (Join-Path $logsPath "api_stderr.log")
-
-    for ($i = 0; $i -lt 60; $i++) {
-        Start-Sleep -Seconds 1
-        try {
-            Invoke-RestMethod -Uri "$apiUrl/api/status" -TimeoutSec 2 | Out-Null
-            $apiReady = $true
-            break
-        } catch {
-            $apiReady = $false
-        }
+    if (Get-NetTCPConnection -LocalPort 55342 -State Listen -ErrorAction SilentlyContinue) {
+        throw "Port 55342 is occupied. Close the other application first."
     }
 }
-
-if (-not $apiReady) {
-    throw "VoiceType API did not become ready at $apiUrl. See logs\api_stderr.log."
+$script = Join-Path $rootPath "api\api_server.py"
+Start-Process -FilePath $python -ArgumentList ('"' + $script + '"') -WorkingDirectory $rootPath -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logs "api_stdout.log") -RedirectStandardError (Join-Path $logs "api_stderr.log") | Out-Null
+# Opening the UI never requires an installed/loaded model.
+for ($attempt = 0; $attempt -lt 60; $attempt++) {
+    Start-Sleep -Milliseconds 500
+    try {
+        $response = Invoke-RestMethod "http://127.0.0.1:55342/api/identity" -TimeoutSec 2
+        if ($response.root -eq $rootPath) { exit 0 }
+    } catch { }
 }
-
-$startAll = Invoke-RestMethod -Uri "$apiUrl/api/start-all" -Method Post -TimeoutSec 240
-
-$asrReady = $false
-for ($i = 0; $i -lt 300; $i++) {
-    Start-Sleep -Seconds 1
-    $listener = Get-NetTCPConnection -LocalPort 55341 -State Listen -ErrorAction SilentlyContinue
-    if ($listener) {
-        $asrReady = $true
-        break
-    }
-}
-
-if (-not $asrReady) {
-    throw "ASR server did not open port 55341 within 300 seconds. See logs\managed_server_*.log and logs\asr_engine_*.log."
-}
-
-Write-Host "VoiceType runtime ready: API=$apiUrl ASR=127.0.0.1:55341 server=$($startAll.server.status) client=$($startAll.client.status)"
+throw "VoiceType API did not start. See logs\api_stderr.log."

@@ -45,7 +45,7 @@ fn project_root() -> PathBuf {
 fn find_project_root_near(start: Option<&Path>) -> Option<PathBuf> {
     let mut current = start?.to_path_buf();
     for _ in 0..6 {
-        if current.join("scripts\\start-runtime.ps1").exists() && current.join("venv\\Scripts\\python.exe").exists() {
+        if current.join("scripts\\start-runtime.ps1").exists() && (current.join("runtime\\python.exe").exists() || current.join("venv\\Scripts\\python.exe").exists()) {
             return Some(current);
         }
         if !current.pop() {
@@ -85,7 +85,7 @@ fn ps_quote_path(path: &Path) -> String {
 fn start_runtime() -> Result<String, String> {
     let root = project_root();
     let script = root.join("scripts\\start-runtime.ps1");
-    let python = root.join("venv\\Scripts\\python.exe");
+    let python = if root.join("runtime\\python.exe").exists() { root.join("runtime\\python.exe") } else { root.join("venv\\Scripts\\python.exe") };
     if !script.exists() {
         return Err(format!("运行时脚本缺失: {}", script.display()));
     }
@@ -119,7 +119,7 @@ fn runtime_diagnostics() -> Result<String, String> {
     let root = project_root();
     let start_script = root.join("scripts\\start-runtime.ps1");
     let stop_script = root.join("scripts\\stop-dev.ps1");
-    let python = root.join("venv\\Scripts\\python.exe");
+    let python = if root.join("runtime\\python.exe").exists() { root.join("runtime\\python.exe") } else { root.join("venv\\Scripts\\python.exe") };
     Ok(format!(
         "root={}\nstart_runtime={}\nstop_runtime={}\npython={}\napi=http://127.0.0.1:55342/api",
         root.display(),

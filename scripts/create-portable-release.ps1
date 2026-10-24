@@ -1,54 +1,15 @@
-param(
-    [string]$Root = (Split-Path -Parent $PSScriptRoot),
-    [string]$Version = "1.0.0",
-    [string]$TargetRelease = ""
-)
-
+﻿param([string]$Root = (Split-Path -Parent $PSScriptRoot), [string]$Version = "1.0.0-alpha.1", [string]$TargetRelease = "", [switch]$WithCuda, [switch]$UseInstalled)
 $ErrorActionPreference = "Stop"
-$rootPath = (Resolve-Path $Root).Path.TrimEnd("\")
-$releaseRoot = Join-Path $rootPath "dist\releases\VoiceType-$Version"
-$frontendTauri = Join-Path $rootPath "frontend\src-tauri"
-
-if (-not $TargetRelease) {
-    $normal = Join-Path $frontendTauri "target\release\voicetype.exe"
-    if (Test-Path $normal) {
-        $TargetRelease = (Split-Path -Parent $normal)
-    } else {
-        $candidate = Get-ChildItem -Path $frontendTauri -Directory -Filter "target-codex-build*" |
-            ForEach-Object { Join-Path $_.FullName "release\voicetype.exe" } |
-            Where-Object { Test-Path $_ } |
-            Sort-Object { (Get-Item $_).LastWriteTime } -Descending |
-            Select-Object -First 1
-        if ($candidate) {
-            $TargetRelease = Split-Path -Parent $candidate
-        }
-    }
-}
-
-$sourceExe = Join-Path $TargetRelease "voicetype.exe"
-if (-not (Test-Path $sourceExe)) {
-    throw "Cannot find built EXE. Expected: $sourceExe"
-}
-
-New-Item -ItemType Directory -Force -Path $releaseRoot | Out-Null
-Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $releaseRoot "VoiceType-$Version-portable.exe") -Force
-
-$readme = @"
-# VoiceType $Version Portable
-
-Open this file:
-
-VoiceType-$Version-portable.exe
-
-Do not open EXE files from target\release\deps, target\release\build, or target-codex-build*\deps.
-
-This portable alpha uses the project runtime at:
-$rootPath
-
-If the app cannot connect, run:
-powershell -NoProfile -ExecutionPolicy Bypass -File "$rootPath\scripts\stop-dev.ps1" -Root "$rootPath"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$rootPath\scripts\start-runtime.ps1" -Root "$rootPath"
-"@
-
-Set-Content -LiteralPath (Join-Path $releaseRoot "README.txt") -Value $readme -Encoding UTF8
-Write-Host "Portable release ready: $(Join-Path $releaseRoot "VoiceType-$Version-portable.exe")"
+$rootPath = (Resolve-Path -LiteralPath $Root).Path
+$python = Join-Path $rootPath "venv\Scripts\python.exe"
+if (-not $TargetRelease) { $TargetRelease = Join-Path $rootPath "frontend\src-tauri\target-codex-build7\release" }
+$exe = Join-Path $TargetRelease "voicetype.exe"
+if (-not (Test-Path -LiteralPath $exe)) { throw "Build the desktop EXE first: $exe" }
+$dotnet = (Get-Command dotnet.exe -ErrorAction Stop).Source
+& $dotnet publish (Join-Path $rootPath "tools\windows_voice_capture\VoiceCaptureHelper.csproj") -c Release -r win-x64 --self-contained true -p:Platform=x64 -o (Join-Path $rootPath "tools\windows_voice_capture\publish")
+if ($LASTEXITCODE -ne 0) { throw "Capture helper publish failed" }
+$buildArgs = @((Join-Path $rootPath "scripts\build_portable.py"), "--version", $Version, "--exe", $exe)
+if ($WithCuda) { $buildArgs += "--cuda" }
+if ($UseInstalled) { $buildArgs += "--installed" }
+& $python @buildArgs
+if ($LASTEXITCODE -ne 0) { throw "Portable build failed" }

@@ -199,8 +199,6 @@ class AudioRecorder:
             "net10.0-windows10.0.26100.0",
             "VoiceCaptureHelper.dll",
         )
-        if not os.path.isfile(helper_project):
-            raise FileNotFoundError(f"Windows voice capture helper is missing: {helper_project}")
         helper_args = [
             "--seconds",
             "120",
@@ -214,6 +212,13 @@ class AudioRecorder:
             "Default",
             "--wait-for-stdin",
         ]
+        published = os.path.join(BASE_DIR, "tools", "windows_voice_capture", "publish", "VoiceCaptureHelper.exe")
+        if os.path.isfile(published):
+            return [published, *helper_args]
+        if os.path.isfile(os.path.join(BASE_DIR, "portable.json")):
+            raise FileNotFoundError("Windows 语音增强不可用，将使用基础录音")
+        if not os.path.isfile(helper_project):
+            raise FileNotFoundError(f"Windows voice capture helper is missing: {helper_project}")
         if os.path.isfile(helper_dll):
             return ["dotnet", helper_dll, *helper_args]
         return ["dotnet", "run", "--project", helper_project, "-c", "Release", "-p:Platform=x64", "--", *helper_args]

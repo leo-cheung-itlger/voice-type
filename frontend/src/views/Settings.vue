@@ -1,5 +1,36 @@
 <template>
   <div class="view">
+    <section id="models" class="section" tabindex="-1" aria-label="识别模型">
+      <div class="section-title"><span>识别设置</span><button class="btn btn-small btn-ghost" @click="refreshModels">刷新</button></div>
+      <p class="label model-help">{{ store.accelerationRecommendation.reason }}。模型需由你点击下载。</p>
+      <div class="panel">
+        <label class="row setting-row"><span class="value">运行方式</span>
+          <select v-model="draftMode" class="field compact" :disabled="settingsLocked"><option value="auto">自动选择</option><option value="cpu">CPU</option><option value="cuda">NVIDIA GPU</option></select>
+        </label>
+        <label class="row setting-row"><span class="value">识别语言</span>
+          <select v-model="draftLanguage" class="field compact" :disabled="settingsLocked"><option v-for="(name, code) in languageNames" :key="code" :value="code" :disabled="!draftSpec?.languages.includes(code)">{{ name }}</option></select>
+        </label>
+        <div v-if="draftSpec && !draftSpec.language_hint" class="row label">此模型自动识别中文和英语，不支持强制指定语言；上述选择不会施加语言约束。</div>
+        <div class="row"><span class="label">已配置：{{ store.selectedModel?.name }} · {{ languageNames[store.config.server.language] }}<br>正在使用：{{ store.runtime.loaded ? store.activeModelLabel : '未加载' }}</span></div>
+      </div>
+      <div v-if="!store.hardware?.torch.cuda_available && store.cudaComponent.portable" class="panel">
+        <div class="row"><span><span class="value">可选 GPU 运行组件</span><span class="label">仅 NVIDIA 用户需要，下载体积见进度；CPU 模型无需安装。</span></span><button class="btn btn-small" :disabled="store.cudaComponent.status === 'running'" @click="store.installCudaComponent()">{{ store.cudaComponent.status === 'running' ? '下载中' : '下载组件' }}</button></div>
+        <p class="label">{{ store.cudaComponent.error || store.cudaComponent.message }} <template v-if="store.cudaComponent.total_bytes">{{ formatSize(store.cudaComponent.downloaded_bytes || 0) }} / {{ formatSize(store.cudaComponent.total_bytes) }}</template></p>
+      </div>
+      <div class="model-list">
+        <div v-for="model in store.models" :key="model.id" class="model-row" :class="{active: draftModel === model.id}">
+          <span><strong>{{ model.name }}</strong><small>{{ modelSummary(model) }}</small><small v-if="model.implemented && !model.exists">下载约 {{ formatSize(model.download_bytes) }} · {{ model.path }}</small></span>
+          <div class="model-actions">
+            <button v-if="model.implemented && !model.exists" class="btn btn-small btn-ghost" @click="downloadModel = model">下载</button>
+            <button v-if="model.implemented" class="btn btn-small btn-ghost" @click="importingModel = model; importDirectory = ''">导入</button>
+            <button class="btn btn-small" :class="draftModel === model.id ? 'btn-primary' : 'btn-ghost'" :disabled="!model.implemented || !model.exists || !modelCompatible(model) || settingsLocked" :aria-label="`选择 ${model.name}`" @click="chooseModel(model)">{{ draftModel === model.id ? '已选' : '选择' }}</button>
+          </div>
+        </div>
+      </div>
+      <div class="restart-row"><span class="label">{{ settingsLocked ? '正在录音、识别或转录，请完成后再修改' : '应用时会重新加载模型；失败时恢复原配置。' }}</span><button class="btn btn-primary" :disabled="settingsLocked || !draftSpec?.exists || !modelCompatible(draftSpec)" @click="applySettings">{{ store.applyingRecognition ? '正在应用…' : '应用并重启识别' }}</button></div>
+      <p v-if="applyError" class="label danger" role="alert">{{ applyError }}</p>
+    </section>
+
     <section class="section">
       <div class="section-title">
         <span>运行设置</span>
@@ -124,133 +155,25 @@
           </span>
           <input v-model="store.config.client.notification_sound" type="checkbox" />
         </label>
-        <label class="row setting-row">
-          <span>
-            <span class="value">GPU 加速</span>
-            <span class="label">{{ store.accelerationState.detail }}</span>
-          </span>
-          <input v-model="store.config.server.gpu" type="checkbox" />
-        </label>
-        <label class="row setting-row">
-          <span>
-            <span class="value">加速后端</span>
-            <span class="label">CUDA / Vulkan / DirectML，服务端重启后生效</span>
-          </span>
-          <select v-model="store.config.server.gpu_backend" class="field compact">
-            <option value="cuda">CUDA</option>
-            <option value="vulkan">Vulkan</option>
-            <option value="dml">DirectML</option>
-          </select>
-        </label>
         <div class="restart-row">
           <span class="label">快捷键、输出模式、麦克风会自动热加载；状态异常时可手动重启客户端。</span>
           <button class="btn btn-small btn-ghost" @click="restartClient">重启客户端</button>
         </div>
-        <div class="runtime-source-row">
-          <span class="label">界面来源</span>
-          <span class="source-badge" :class="{ live: store.frontendSource === 'live-ui' }">{{ store.frontendSource }}</span>
-          <span class="label">{{ store.frontendSource === 'live-ui' ? '正在使用源码热更新界面' : '正在使用 EXE 内嵌界面' }}</span>
-        </div>
+        <details class="build-details">
+          <summary>版本与诊断信息</summary>
+          <p>版本：{{ store.appVersionLabel }}</p>
+          <p>构建标识：{{ store.appBuildLabel }}</p>
+          <p>构建时间：{{ store.appBuildTime }}</p>
+          <p>界面：{{ store.frontendSource === 'live-ui' ? '开发预览（源码更新后自动刷新）' : '正式构建' }}</p>
+          <p>识别进程：{{ store.serverPid || '未运行' }} · 录音进程：{{ store.clientPid || '未运行' }}</p>
+        </details>
       </div>
     </section>
 
-    <section class="section">
-      <div class="section-title">
-        <span>硬件与加速</span>
-        <button class="btn btn-small btn-ghost" @click="store.fetchHardware()">刷新</button>
-      </div>
-      <div class="panel">
-        <div class="row">
-          <div>
-            <div class="value">{{ store.hardware?.nvidia_gpu ? 'NVIDIA GPU 已检测' : '未检测到 NVIDIA GPU' }}</div>
-            <div class="label">{{ gpuLabel }}</div>
-          </div>
-          <span class="model-state" :class="{ ok: store.accelerationState.active }">
-            {{ store.accelerationState.label }}
-          </span>
-        </div>
-        <div class="row">
-          <div>
-            <div class="value">PyTorch</div>
-            <div class="label">{{ torchLabel }}</div>
-          </div>
-          <span class="label">{{ store.hardware?.memory_gb ? `${store.hardware.memory_gb}GB RAM` : '-' }}</span>
-        </div>
-        <div class="state-grid">
-          <div>
-            <span>GPU</span>
-            <strong :class="{ ok: store.hardware?.nvidia_gpu }">{{ store.hardware?.nvidia_gpu ? '已检测' : '缺失' }}</strong>
-          </div>
-          <div>
-            <span>CUDA</span>
-            <strong :class="{ ok: store.accelerationState.cudaReady }">{{ store.accelerationState.cudaReady ? '可用' : '受阻' }}</strong>
-          </div>
-          <div>
-            <span>Vulkan</span>
-            <strong :class="{ ok: store.accelerationState.vulkanSelected && store.accelerationState.blocks.length === 0 }">
-              {{ store.accelerationState.vulkanSelected ? '已选择' : '未选择' }}
-            </strong>
-          </div>
-        </div>
-        <div v-if="store.accelerationState.blocks.length" class="block-list">
-          <div v-for="block in store.accelerationState.blocks" :key="block">{{ block }}</div>
-        </div>
-        <div class="recommendation-panel">
-          <div>
-            <div class="value">推荐：{{ store.accelerationRecommendation.modelName }}</div>
-            <div class="label">{{ store.accelerationRecommendation.reason }}</div>
-          </div>
-          <button class="btn btn-small btn-primary" @click="applyRecommendation">应用推荐</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="section">
-      <div class="section-title">
-        <span>模型</span>
-        <button class="btn btn-small btn-ghost" @click="refreshModels">刷新</button>
-      </div>
-      <div class="model-list">
-        <div
-          v-for="model in store.models"
-          :key="model.id"
-          class="model-row"
-          :class="{ active: store.config.server.model === model.id }"
-        >
-          <span>
-            <strong>{{ model.name }}</strong>
-            <small>{{ modelSummary(model) }}</small>
-          </span>
-          <div class="model-actions">
-            <button v-if="!model.exists && model.download_url" class="btn btn-small btn-ghost" @click="downloadModel = model">下载</button>
-            <button class="btn btn-small btn-ghost" @click="store.openModelFolder(model.id)">打开</button>
-            <button class="btn btn-small" :class="store.config.server.model === model.id ? 'btn-primary' : 'btn-ghost'" @click="store.selectModel(model.id)">
-              {{ store.config.server.model === model.id ? '已选' : '选择' }}
-            </button>
-            <span class="model-state" :class="{ ok: model.exists }">{{ model.exists ? '可用' : '未装' }}</span>
-          </div>
-        </div>
-      </div>
-      <div class="benchmark-actions">
-        <button
-          class="btn btn-small btn-primary"
-          :disabled="benchmarking"
-          @click="benchmarkSelected"
-        >
-          {{ benchmarking ? '测试中' : '测试当前模型' }}
-        </button>
-        <button
-          class="btn btn-small btn-ghost"
-          :disabled="benchmarking"
-          @click="benchmarkAll"
-        >
-          {{ benchmarking ? '队列中' : '测试全部已安装' }}
-        </button>
-        <span class="label">{{ benchmarkHint }}</span>
-      </div>
-    </section>
-
-    <section class="section">
+    <details class="section build-details">
+      <summary>高级：环境、日志与性能测试</summary>
+      <p class="label">{{ gpuLabel }} · {{ torchLabel }}</p>
+      <div class="benchmark-actions"><button class="btn btn-small btn-ghost" :disabled="benchmarking || store.serverRunning || store.busy" @click="benchmarkSelected">测试当前模型</button><span class="label">请先停止识别服务再运行独占测试。{{ benchmarkHint }}</span></div>
       <div class="section-title">
         <span>最近日志</span>
         <button class="btn btn-small btn-ghost" @click="store.fetchLogs()">刷新</button>
@@ -262,13 +185,16 @@
         </div>
         <div v-if="store.logs.length === 0" class="empty">暂无日志</div>
       </div>
-    </section>
+    </details>
+
+    <div v-if="importingModel" class="modal-backdrop" @click.self="importingModel = null"><div class="modal" role="dialog" aria-modal="true" aria-label="导入本地模型"><label>导入 {{ importingModel.name }}<input v-model="importDirectory" class="field" placeholder="模型文件夹的完整路径" /></label><p class="label">只导入与此模型引擎匹配的文件；模型保留在原目录。</p><button class="btn btn-primary" :disabled="!importDirectory.trim()" @click="importLocal">验证并导入</button><button class="btn btn-ghost" @click="importingModel = null">取消</button></div></div>
 
     <div v-if="downloadModel" class="modal-backdrop" @click.self="downloadModel = null">
-      <div class="modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="下载模型">
         <div>
           <div class="value">下载 {{ downloadModel.name }}</div>
           <div class="label">{{ downloadHint(downloadModel) }}</div>
+          <div class="label">安装位置：{{ downloadJob(downloadModel)?.target_dir || downloadModel.path }}</div>
         </div>
         <button
           v-if="downloadModel.modelscope_id"
@@ -304,6 +230,33 @@ import { useRouter } from 'vue-router'
 import { type AudioInputDevice, type ModelEntry, useAppStore } from '../stores/app'
 
 const store = useAppStore()
+const languageNames: Record<string, string> = { zh: '普通话', auto: '自动检测', en: '英语', yue: '粤语', ja: '日语', ko: '韩语' }
+const draftModel = ref(store.config.server.model)
+const draftLanguage = ref(store.config.server.language)
+const draftMode = ref(store.config.server.compute_mode)
+const applyError = ref('')
+const importingModel = ref<ModelEntry | null>(null)
+const importDirectory = ref('')
+const draftSpec = computed(() => store.models.find(m => m.id === draftModel.value))
+const settingsLocked = computed(() => store.applyingRecognition || store.busy)
+function modelCompatible(model: ModelEntry) {
+  if (!model.implemented) return false
+  if (draftMode.value === 'cuda') return model.backend === 'qwen-asr' && Boolean(store.hardware?.torch.cuda_available)
+  return model.backend !== 'qwen-asr' || Boolean(store.hardware?.torch.available && store.hardware?.torch.qwen_available && (draftMode.value === 'cpu' || store.hardware?.torch.cuda_available))
+}
+function chooseModel(model: ModelEntry) {
+  draftModel.value = model.id
+  if (!model.languages.includes(draftLanguage.value)) draftLanguage.value = 'zh'
+}
+function formatSize(bytes: number) { return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB` }
+async function applySettings() {
+  applyError.value = ''
+  const data = await store.applyRecognition(draftModel.value, draftLanguage.value, draftMode.value)
+  if (!data) applyError.value = store.lastError || store.toastMessage
+}
+async function importLocal() {
+  if (importingModel.value && await store.importModel(importingModel.value.id, importDirectory.value.trim())) importingModel.value = null
+}
 const router = useRouter()
 const benchmarking = ref(false)
 const captureMode = ref(false)
@@ -315,6 +268,8 @@ const selectedInputDevice = ref(-1)
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let downloadPollTimer: ReturnType<typeof setInterval> | null = null
 let saveStarted = false
+let componentTimer: ReturnType<typeof setInterval> | null = null
+let componentPolling = false
 
 const gpuLabel = computed(() => {
   const gpus = store.hardware?.gpus || []
@@ -330,13 +285,16 @@ const torchLabel = computed(() => {
 })
 
 const benchmarkHint = computed(() => {
-  const model = store.models.find((item) => item.id === store.config.server.model)
-  const result = model ? bestBenchmark(model) : store.benchmarks[store.config.server.model]
+  const result = store.benchmarks[store.config.server.model]
   if (!result) return '用于判断 0.6B/1.7B 在本机的真实耗时'
   if (!result.exists) return '模型未安装'
   if (!result.ok) return result.error || '测试失败'
   return `最近耗时 ${Number(result.recognition_seconds || result.inference_seconds || 0).toFixed(2)}s · ${result.acceleration || 'unknown'}`
 })
+
+async function refreshModels() {
+  await Promise.all([store.fetchModels(), store.fetchHardware()])
+}
 
 const microphoneHint = computed(() => {
   const devices = store.audioInputDevices
@@ -545,30 +503,11 @@ async function restartClient() {
 }
 
 function modelSummary(model: ModelEntry) {
-  const parts = [model.exists ? '已安装' : '未安装', modelFeatureLabel(model)]
-  if (model.role === 'daily') parts.push('日用')
-  if (model.role === 'quality') parts.push('高质量')
-  if (model.blocking_reason && model.blocking_reason !== 'model_missing') parts.push(blockingLabel(model.blocking_reason))
-  const bench = bestBenchmark(model)
-  if (bench?.ok) {
-    const mode = bench.actual_gpu ? 'GPU' : 'CPU'
-    parts.push(`${mode} ${Number(bench.recognition_seconds || bench.inference_seconds || 0).toFixed(2)}s`)
-  }
-  return parts.join(' · ')
+  if (!model.implemented) return '后端开发中，暂不可使用或下载'
+  return [model.active ? '正在使用 · 加载成功' : model.exists ? '已安装 · 未加载' : '未安装', modelCompatible(model) ? '环境兼容' : '当前运行方式不兼容', model.id === store.accelerationRecommendation.model ? '推荐' : ''].filter(Boolean).join(' · ')
 }
-
-function modelFeatureLabel(model: ModelEntry) {
-  if (model.id.includes('0.6b')) return '轻量 CUDA'
-  if (model.id.includes('gguf')) return 'CPU/GGUF 量化'
-  if (model.id === 'paraformer') return 'CPU 低延迟'
-  if (model.backend === 'sherpa-onnx') return 'CPU/ONNX'
-  if (model.id.includes('1.7b')) return '高质量 CUDA'
-  return model.backend || '模型'
-}
-
 function downloadHint(model: ModelEntry) {
-  if (model.modelscope_id) return '点击后会在项目 venv 中补装 ModelScope SDK，并把模型下载到安装目录；官网网页适合手动查看、克隆或下载文件。'
-  return '该模型暂无 ModelScope 配置，请从模型网页手动下载或按页面说明安装。'
+  return `${model.backend === 'sherpa-onnx' ? '官方 ONNX INT8 模型' : '官方 Qwen 权重'}，下载约 ${formatSize(model.download_bytes)}。失败后可重试。`
 }
 
 function downloadJob(model: ModelEntry) {
@@ -579,14 +518,14 @@ function downloadButtonLabel(model: ModelEntry) {
   const status = downloadJob(model)?.status
   if (status === 'running') return '正在下载'
   if (status === 'done' || status === 'installed') return '已下载'
-  return '一键下载 ModelScope'
+  return status === 'error' ? '重试下载' : '下载模型'
 }
 
 function downloadStatusText(model: ModelEntry) {
   const job = downloadJob(model)
   if (!job) return ''
   if (job.status === 'error') return job.error || '下载失败'
-  if (job.status === 'running') return `${job.message || '正在下载'}：${job.target_dir || model.path}`
+  if (job.status === 'running') return `${job.message || '正在下载'} · ${formatSize(job.downloaded_bytes || 0)} / ${formatSize(job.total_bytes || model.download_bytes)}`
   if (job.status === 'done' || job.status === 'installed') return job.message || '下载完成'
   return job.message || ''
 }
@@ -619,37 +558,6 @@ function startDownloadPolling(modelId: string) {
   }, 3000)
 }
 
-function bestBenchmark(model: ModelEntry) {
-  const gpuOnly = Boolean(store.config.server.gpu_required && !store.config.server.allow_cpu_fallback)
-  const candidates = [
-    model.benchmark,
-    store.benchmarks[model.id],
-    ...Object.values(model.benchmarks || {}),
-  ].filter(Boolean)
-  const successful = candidates
-    .filter((bench) => bench?.ok && Number(bench.recognition_seconds || bench.inference_seconds || 0) > 0)
-    .filter((bench) => !gpuOnly || bench?.actual_gpu)
-    .sort((a, b) => Number(a?.recognition_seconds || a?.inference_seconds || 0) - Number(b?.recognition_seconds || b?.inference_seconds || 0))
-  if (successful.length) return successful[0]
-  return candidates
-    .filter((bench) => !gpuOnly || bench?.actual_gpu || /cuda|vulkan|dml/.test(bench?.acceleration || ''))
-    .sort((a, b) => Number(b?.updated_at || 0) - Number(a?.updated_at || 0))[0] || null
-}
-
-function blockingLabel(reason: string) {
-  const labels: Record<string, string> = {
-    model_missing: '模型缺失',
-    cuda_unavailable: 'CUDA 受阻',
-    gguf_vulkan_missing: 'Vulkan 缺失',
-    cpu_only_model_blocked_by_gpu_required: 'CPU-only 已阻止',
-  }
-  return labels[reason] || reason
-}
-
-async function refreshModels() {
-  await Promise.all([store.fetchModels(), store.fetchBenchmarks(), store.fetchHardware()])
-}
-
 async function benchmarkSelected() {
   benchmarking.value = true
   try {
@@ -659,25 +567,21 @@ async function benchmarkSelected() {
   }
 }
 
-async function benchmarkAll() {
-  benchmarking.value = true
-  try {
-    await store.runAllBenchmarks()
-  } finally {
-    benchmarking.value = false
-  }
-}
-
-async function applyRecommendation() {
-  await store.applyAccelerationRecommendation()
-}
-
 onMounted(async () => {
   await store.fetchConfig()
+  draftModel.value = store.config.server.model
+  draftMode.value = store.config.server.compute_mode
+  draftLanguage.value = store.config.server.language
   selectedInputDevice.value = selectedDeviceIndexForUi()
   activeClientShortcut.value = normalizeShortcut(store.config.client.shortcut_key)
   activeClientDevice.value = deviceSignature()
   store.fetchModels()
+  store.fetchCudaComponent()
+  componentTimer = setInterval(async () => {
+    if (componentPolling || store.cudaComponent.status !== 'running') return
+    componentPolling = true
+    try { await store.fetchCudaComponent(); if (String(store.cudaComponent.status) === 'done') await store.fetchHardware() } finally { componentPolling = false }
+  }, 3000)
   store.fetchHardware()
   store.fetchAudioInputDevices().then(() => {
     selectedInputDevice.value = selectedDeviceIndexForUi()
@@ -693,6 +597,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onCaptureKeydown, true)
   if (saveTimer) clearTimeout(saveTimer)
+  if (componentTimer) clearInterval(componentTimer)
   if (downloadPollTimer) clearInterval(downloadPollTimer)
 })
 

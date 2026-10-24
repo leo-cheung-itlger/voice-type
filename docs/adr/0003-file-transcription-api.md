@@ -12,9 +12,10 @@ VoiceType needs audio/video file transcription, subtitle export, and optional LL
 
 Implement file transcription as an independent API-managed queue:
 
-- The real-time ASR server/client remains separate.
+- The real-time ASR server/client remains separate. Updated 2026-10-24: queue tasks reuse that ASR service instead of loading a second engine; model/language switches serialize under a lifecycle lock and pause/restore the hotkey client.
 - `POST /api/transcriptions` accepts local absolute file paths for desktop/Tauri/agent use.
 - `POST /api/transcriptions/upload` accepts browser uploads and stores them under ignored local runtime data.
+- Each new task snapshots model, compute policy and recognition language; legacy records retain unknown language. FFmpeg decoding streams bounded chunks.
 - Results are normalized to JSON first, with TXT and SRT generated from that structure.
 - SRT uses approximate chunk timestamps until a timestamp-capable ASR backend is added.
 - LLM polishing is limited to file transcription outputs and uses a local ignored OpenAI-compatible configuration.

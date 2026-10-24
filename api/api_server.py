@@ -9,6 +9,8 @@ import subprocess
 import sys
 import time
 import uuid
+import threading
+import copy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -32,6 +34,11 @@ from common.audio_levels import quality_message
 from common.history import HistoryManager
 from common.hotword import HotwordManager
 from common.logger import setup_logger
+from common.activity import activity, activities
+from common.model_catalog import CATALOG, LANGUAGES, model_installed, model_web_url, validate_model
+from common.model_download import jobs as model_download_jobs, start_download, import_model
+from common.runtime_policy import cuda_status, python_for_model, runtime_state
+from common import components
 from common.transcription import (
     TranscriptionManager,
     ffmpeg_status,
@@ -56,6 +63,7 @@ from config.settings import (
     model_root_candidates,
     resolve_model_dir,
     save_app_config,
+    save_server_config,
     update_app_config,
 )
 from server.asr_engine import ASREngine
@@ -68,7 +76,7 @@ app = FastAPI(title="VoiceType API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://127.0.0.1:55343", "http://localhost:55343", "http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -94,7 +102,17 @@ transcriptions = TranscriptionManager()
 server_process: Optional[subprocess.Popen] = None
 client_process: Optional[subprocess.Popen] = None
 _PROCESS_CACHE = {"time": 0.0, "rows": []}
-model_download_jobs: dict[str, dict] = {}
+_lifecycle_lock = threading.RLock()
+_cuda_cache = {"time": 0, "value": {}}
+
+
+@app.middleware("http")
+async def require_local_origin(request, call_next):
+    origin = request.headers.get("origin")
+    if origin and origin not in {"http://127.0.0.1:55343", "http://localhost:55343", "http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"}:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail": "不允许此网页访问本地 VoiceType"}, status_code=403)
+    return await call_next(request)
 
 
 class ErrorMarkRequest(BaseModel):
@@ -113,6 +131,15 @@ class ModelSelectRequest(BaseModel):
     model_dir: Optional[str] = None
 
 
+class RecognitionApplyRequest(ModelSelectRequest):
+    language: str = "zh"
+    compute_mode: str = "auto"
+
+
+class ModelImportRequest(BaseModel):
+    directory: str
+
+
 class ModelBenchmarkRequest(BaseModel):
     model: Optional[str] = None
     models: Optional[list[str]] = None
@@ -124,6 +151,7 @@ class ModelBenchmarkRequest(BaseModel):
 class TranscriptionCreateRequest(BaseModel):
     input_files: list[str]
     model: Optional[str] = None
+    language: Optional[str] = None
     output_dir: Optional[str] = None
     formats: list[str] = ["json", "txt", "srt"]
     polish: bool = False
@@ -161,10 +189,7 @@ class AudioFormatProbeRequest(BaseModel):
 class ProcessManager:
     @staticmethod
     def _find_python() -> str:
-        project_python = os.path.join(BASE_DIR, "venv", "Scripts", "python.exe")
-        if os.path.exists(project_python):
-            return project_python
-        return sys.executable
+        return python_for_model()
 
     @staticmethod
     def _get_script_path(name: str) -> str:
@@ -198,6 +223,8 @@ class ProcessManager:
                     "elapsed_seconds": round(time.monotonic() - started, 2),
                     "server": server,
                 }
+            if server_process is not None and server_process.poll() is not None:
+                return {"ready": False, "message": runtime_state().get("error") or "识别进程退出，请检查模型文件和运行组件"}
             await asyncio.sleep(1)
         return {
             "ready": False,
@@ -213,6 +240,9 @@ class ProcessManager:
             f"--port={config.port}",
             f"--model={config.model}",
             f"--gpu-backend={config.gpu_backend}",
+            f"--compute-mode={config.compute_mode}",
+            f"--language={config.language}",
+            f"--cpu-threads={config.cpu_threads}",
         ]
         if config.model_dir:
             args.append(f"--model-dir={config.model_dir}")
@@ -350,12 +380,12 @@ $items | ConvertTo-Json -Compress
         return pids
 
     @staticmethod
-    def start_server() -> dict:
+    def start_server(config_override=None) -> dict:
         global server_process
         if server_process and server_process.poll() is None:
             return {"status": "already_running", "pid": server_process.pid}
 
-        config = load_app_config().server
+        config = config_override or load_app_config().server
         server_rows = ProcessManager._processes_by_role("server")
         if len(server_rows) == 1 and ProcessManager._port_open("127.0.0.1", config.port):
             return {"status": "already_running", "pid": server_rows[0]["pid"], "managed": True}
@@ -372,7 +402,7 @@ $items | ConvertTo-Json -Compress
                 "port": config.port,
             }
 
-        python = ProcessManager._find_python()
+        python = python_for_model(config.model)
         script = ProcessManager._get_script_path("server/asr_server.py")
         stdout, stderr = ProcessManager._log_handles("managed_server")
         server_process = subprocess.Popen(
@@ -383,6 +413,7 @@ $items | ConvertTo-Json -Compress
             creationflags=ProcessManager._creation_flags(),
         )
         logger.info(f"Server started (PID: {server_process.pid})")
+        _PROCESS_CACHE["time"] = 0
         return {"status": "started", "pid": server_process.pid}
 
     @staticmethod
@@ -398,6 +429,7 @@ $items | ConvertTo-Json -Compress
             stopped.append(server_process.pid)
             server_process = None
         stopped.extend(ProcessManager._terminate_role("server"))
+        _PROCESS_CACHE["time"] = 0
         if stopped:
             logger.info(f"Server processes stopped: {stopped}")
             return {"status": "stopped", "pids": sorted(set(stopped))}
@@ -430,6 +462,7 @@ $items | ConvertTo-Json -Compress
             creationflags=ProcessManager._creation_flags(),
         )
         logger.info(f"Client started (PID: {client_process.pid})")
+        _PROCESS_CACHE["time"] = 0
         return {"status": "started", "pid": client_process.pid}
 
     @staticmethod
@@ -445,6 +478,7 @@ $items | ConvertTo-Json -Compress
             stopped.append(client_process.pid)
             client_process = None
         stopped.extend(ProcessManager._terminate_role("client"))
+        _PROCESS_CACHE["time"] = 0
         if stopped:
             logger.info(f"Client processes stopped: {stopped}")
             return {"status": "stopped", "pids": sorted(set(stopped))}
@@ -453,11 +487,12 @@ $items | ConvertTo-Json -Compress
     @staticmethod
     def check_server_health() -> dict:
         config = load_app_config().server
-        process_running = server_process is not None and server_process.poll() is None
+        process = server_process
+        process_running = process is not None and process.poll() is None
         server_rows = ProcessManager._processes_by_role("server")
         port_running = ProcessManager._port_open("127.0.0.1", config.port)
         managed = process_running or bool(server_rows)
-        pids = [row["pid"] for row in server_rows] or ([server_process.pid] if process_running else [])
+        pids = [row["pid"] for row in server_rows] or ([process.pid] if process_running else [])
         pids = sorted(set(pids))
         return {
             "running": managed or port_running,
@@ -472,9 +507,10 @@ $items | ConvertTo-Json -Compress
 
     @staticmethod
     def check_client_health() -> dict:
-        process_running = client_process is not None and client_process.poll() is None
+        process = client_process
+        process_running = process is not None and process.poll() is None
         client_rows = ProcessManager._processes_by_role("client")
-        pids = [row["pid"] for row in client_rows] or ([client_process.pid] if process_running else [])
+        pids = [row["pid"] for row in client_rows] or ([process.pid] if process_running else [])
         pids = sorted(set(pids))
         running = bool(pids)
         return {
@@ -521,39 +557,30 @@ def _line_is_recent_issue(line: str) -> bool:
 
 
 def _model_entries() -> list:
+    state = runtime_state()
+    config = load_app_config().server
+    torch = _torch_status()
+    cuda = torch.get("cuda_available", False)
     entries = []
-    benchmark = _load_model_benchmark()
-    diagnostics = _runtime_diagnostics()
-    recommendation = _build_recommendation(benchmark, diagnostics)
-    for model, dirname in MODEL_DIR_NAMES.items():
+    for model, spec in CATALOG.items():
         path = resolve_model_dir(model)
-        exists = os.path.isdir(path)
-        backend = _expected_model_backend(model)
-        role = "daily" if model in ("qwen3-asr-0.6b", "qwen3-asr-1.7b-gguf-vulkan") else "quality" if model == "qwen3-asr-1.7b" else "fast"
-        model_benchmarks = {
-            key: value for key, value in benchmark.items()
-            if key == model or key.startswith(f"{model}::")
-        }
-        blocking_reason = _model_blocking_reason(model, exists, diagnostics)
-        entries.append({
-            "id": model,
-            "name": dirname,
-            "path": path,
-            "exists": exists,
-            "installed": exists,
-            "backend": backend,
-            "role": role,
-            "acceleration": _default_acceleration_for_model(model),
-            "download_url": MODEL_DOWNLOAD_URLS.get(model, ""),
-            "modelscope_id": MODEL_MODELSCOPE_IDS.get(model, ""),
-            "gpu_required_supported": not bool(blocking_reason),
-            "blocking_reason": blocking_reason,
-            "recommended_for": recommendation.get("recommended_for", {}).get(model, []),
-            "benchmark": _normalize_benchmark(benchmark[model]) if model in benchmark else None,
-            "benchmarks": model_benchmarks,
+        installed = model_installed(model, path)
+        compatible = spec["implemented"] and (spec["backend"] != "qwen-asr" or (torch.get("available") and torch.get("qwen_available") and (config.compute_mode == "cpu" or cuda)))
+        if config.compute_mode == "cuda" and spec["backend"] != "qwen-asr":
+            compatible = False
+        entries.append({"id": model, "name": spec["name"], "path": path,
+            "exists": installed, "installed": installed, "compatible": compatible,
+            "implemented": spec["implemented"], "backend": spec["backend"], "role": spec.get("role", ""),
+            "languages": spec["languages"], "language_hint": spec.get("language_hint", False),
+            "download_bytes": spec.get("download_bytes", 0), "download_url": model_web_url(model),
+            "modelscope_id": spec.get("hub", "official-onnx" if spec["implemented"] else ""),
+            "loaded": bool(state.get("loaded") and state.get("active_model") == model),
+            "active": bool(state.get("loaded") and state.get("active_model") == model),
+            "gpu_required_supported": compatible,
+            "blocking_reason": "尚未实现此后端" if not spec["implemented"] else "当前运行方式或 GPU 组件不兼容" if not compatible else "",
+            "recommended_for": ["realtime"] if model == ("qwen3-asr-0.6b" if cuda else "sensevoice") else [],
         })
     return entries
-
 
 def _safe_model_target(model_id: str) -> Path:
     if model_id not in MODEL_DIR_NAMES:
@@ -565,93 +592,6 @@ def _safe_model_target(model_id: str) -> Path:
     return target
 
 
-def _public_model_download_job(job: dict) -> dict:
-    return {
-        "model": job.get("model", ""),
-        "modelscope_id": job.get("modelscope_id", ""),
-        "status": job.get("status", "idle"),
-        "target_dir": job.get("target_dir", ""),
-        "log_path": job.get("log_path", ""),
-        "started_at": job.get("started_at"),
-        "finished_at": job.get("finished_at"),
-        "returncode": job.get("returncode"),
-        "message": job.get("message", ""),
-        "error": job.get("error", ""),
-    }
-
-
-def _run_modelscope_download(model_id: str, job: dict):
-    target_dir = Path(job["target_dir"])
-    log_path = Path(job["log_path"])
-    try:
-        target_dir.parent.mkdir(parents=True, exist_ok=True)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        code = (
-            "import sys\n"
-            "from modelscope import snapshot_download\n"
-            "snapshot_download(sys.argv[1], local_dir=sys.argv[2])\n"
-        )
-        job["message"] = "正在从 ModelScope 下载模型"
-        with open(log_path, "w", encoding="utf-8", errors="replace") as log_file:
-            probe = subprocess.run(
-                [sys.executable, "-c", "import modelscope"],
-                cwd=BASE_DIR,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                env=env,
-            )
-            if probe.returncode != 0:
-                job["message"] = "正在安装 ModelScope SDK"
-                install_command = [sys.executable, "-m", "pip", "install", "modelscope"]
-                log_file.write(f"Install command: {install_command}\n")
-                log_file.flush()
-                install = subprocess.run(
-                    install_command,
-                    cwd=BASE_DIR,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    env=env,
-                )
-                if install.returncode != 0:
-                    job["returncode"] = install.returncode
-                    job["status"] = "error"
-                    job["finished_at"] = time.time()
-                    job["error"] = "ModelScope SDK 安装失败，请查看下载日志"
-                    return
-
-            job["message"] = "正在从 ModelScope 下载模型"
-            command = [sys.executable, "-c", code, job["modelscope_id"], str(target_dir)]
-            log_file.write(f"Command: {command}\n")
-            log_file.flush()
-            process = subprocess.Popen(
-                command,
-                cwd=BASE_DIR,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                env=env,
-            )
-            job["pid"] = process.pid
-            returncode = process.wait()
-        job["returncode"] = returncode
-        job["finished_at"] = time.time()
-        if returncode == 0 and target_dir.exists() and any(target_dir.iterdir()):
-            job["status"] = "done"
-            job["message"] = "下载完成"
-        else:
-            job["status"] = "error"
-            if returncode != 0:
-                job["error"] = (
-                    "ModelScope 下载失败。若日志提示 No module named 'modelscope'，"
-                    f"请先运行：{sys.executable} -m pip install modelscope"
-                )
-            else:
-                job["error"] = "ModelScope 下载结束，但目标目录仍为空"
-    except Exception as exc:
-        job["status"] = "error"
-        job["finished_at"] = time.time()
-        job["error"] = str(exc)
 
 
 def _benchmark_path() -> str:
@@ -739,34 +679,11 @@ def _model_blocking_reason(model: str, exists: bool, diagnostics: dict) -> str:
 
 
 def _build_recommendation(benchmark: dict, diagnostics: dict) -> dict:
-    recommended_for: dict[str, list[str]] = {}
-    realtime_candidates = []
-    quality_candidates = []
-    for key, result in benchmark.items():
-        normalized = _normalize_benchmark(result)
-        model = normalized.get("model", key.split("::", 1)[0])
-        if not normalized.get("ok") or not normalized.get("actual_gpu"):
-            continue
-        seconds = float(normalized.get("inference_seconds") or normalized.get("recognition_seconds") or 9999)
-        realtime_candidates.append((seconds, model, key))
-        if model.startswith("qwen3-asr"):
-            quality_candidates.append((seconds, model, key))
-
-    realtime = min(realtime_candidates, default=None)
-    quality = min(quality_candidates, default=None)
-    if realtime:
-        recommended_for.setdefault(realtime[1], []).append("realtime")
-    if quality:
-        recommended_for.setdefault(quality[1], []).append("quality")
-    return {
-        "status": "ok" if realtime else "blocked",
-        "realtime_model": realtime[1] if realtime else "",
-        "quality_model": quality[1] if quality else "",
-        "recommended_for": recommended_for,
-        "reason": "GPU benchmark result found" if realtime else "No installed model has a successful GPU benchmark yet",
-        "diagnostics": diagnostics,
-    }
-
+    cuda = diagnostics["torch"].get("cuda_available", False)
+    model = "qwen3-asr-0.6b" if cuda else "sensevoice"
+    return {"status": "ok", "realtime_model": model, "quality_model": "qwen3-asr-1.7b" if cuda else "sensevoice",
+            "recommended_for": {model: ["realtime"]},
+            "reason": "NVIDIA CUDA 可用，推荐 Qwen 0.6B" if cuda else "无需独立显卡，推荐 SenseVoice INT8（CPU）"}
 
 def _benchmark_acceleration(model: str, gpu: bool, gpu_backend: str) -> str:
     if not gpu:
@@ -789,19 +706,9 @@ def _actual_gpu_used(status: str, acceleration: str, torch_status: dict) -> bool
 
 
 def _torch_status() -> dict:
-    status = {"available": False, "version": "", "cuda_available": False, "cuda_version": None, "device": "", "error": ""}
-    try:
-        import torch
-        status["available"] = True
-        status["version"] = getattr(torch, "__version__", "")
-        status["cuda_version"] = getattr(torch.version, "cuda", None)
-        status["cuda_available"] = bool(torch.cuda.is_available())
-        if status["cuda_available"]:
-            status["device"] = torch.cuda.get_device_name(0)
-    except Exception as exc:
-        status["error"] = str(exc)
-    return status
-
+    if time.monotonic() - _cuda_cache["time"] > 60 or not _cuda_cache["value"]:
+        _cuda_cache.update(time=time.monotonic(), value=cuda_status())
+    return _cuda_cache["value"]
 
 def _nvidia_status() -> dict:
     try:
@@ -912,6 +819,27 @@ async def get_status():
     return {"server": server, "client": client}
 
 
+@app.get("/api/identity")
+async def get_identity():
+    return {"application": "VoiceType", "root": BASE_DIR, "version": "1.0.0"}
+
+
+@app.get("/api/components/cuda")
+async def get_cuda_component():
+    if components.job.get("status") == "done":
+        _cuda_cache["time"] = 0
+    return {**components.job, "installed": (Path(BASE_DIR) / "runtime-cuda/python.exe").is_file(),
+            "portable": (Path(BASE_DIR) / "portable.json").is_file()}
+
+
+@app.post("/api/components/cuda")
+async def install_cuda_component():
+    try:
+        return components.start()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.get("/api/health")
 async def get_health():
     config = load_app_config()
@@ -932,6 +860,8 @@ async def get_health():
         "model": selected_model,
         "diagnostics": diagnostics,
         "config_file": APP_CONFIG_FILE,
+        "runtime": runtime_state(),
+        "activities": activities(),
         "recent_issues": recent_lines[-30:],
     }
 
@@ -946,7 +876,16 @@ async def put_config(req: ConfigUpdateRequest):
     values = req.model_dump(exclude_none=True)
     if "server" in values and "model" in values["server"] and "model_dir" not in values["server"]:
         values["server"]["model_dir"] = ""
-    config = update_app_config(values)
+    # Runtime-affecting settings have one transactional entry point.
+    if values.get("server"):
+        before = app_config_to_dict(load_app_config())["server"]
+        for key, value in values["server"].items():
+            if key in {"model", "model_dir", "language", "compute_mode", "gpu", "gpu_required", "allow_cpu_fallback"} and value != before.get(key):
+                raise HTTPException(409, "模型、语言和运行方式请使用“应用并重启识别”")
+    try:
+        config = update_app_config(values)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     return {"status": "saved", "config": app_config_to_dict(config)}
 
 
@@ -1491,8 +1430,7 @@ def _run_windows_voice_probe(req: AudioFormatProbeRequest) -> dict:
         / "net10.0-windows10.0.26100.0"
         / "VoiceCaptureHelper.dll"
     )
-    if not helper_project.is_file():
-        raise RuntimeError(f"Windows voice capture helper is missing: {helper_project}")
+    published = Path(BASE_DIR) / "tools/windows_voice_capture/publish/VoiceCaptureHelper.exe"
 
     config = load_app_config()
     device_name = req.device_name or config.client.input_device_name
@@ -1508,7 +1446,11 @@ def _run_windows_voice_probe(req: AudioFormatProbeRequest) -> dict:
         "--processing",
         "Default",
     ]
-    if helper_dll.is_file():
+    if published.is_file():
+        command = [str(published), *helper_args]
+    elif (Path(BASE_DIR) / "portable.json").is_file():
+        raise RuntimeError("Windows 语音增强不可用，将使用基础录音")
+    elif helper_dll.is_file():
         command = ["dotnet", str(helper_dll), *helper_args]
     else:
         command = ["dotnet", "run", "--project", str(helper_project), "-c", "Release", "-p:Platform=x64", "--", *helper_args]
@@ -1756,65 +1698,37 @@ async def get_models():
         "selected": config.server.model,
         "models_dir": MODELS_DIR,
         "model_roots": model_root_candidates(),
+        "downloads": model_download_jobs,
     }
 
 
+@app.get("/api/models/{model_id}/download")
 @app.get("/api/models/{model_id}/download-modelscope")
 async def get_modelscope_download(model_id: str):
-    if model_id not in MODEL_DIR_NAMES:
-        raise HTTPException(status_code=404, detail="Unknown model")
-    job = model_download_jobs.get(model_id)
-    if job:
-        return _public_model_download_job(job)
-    target = _safe_model_target(model_id)
-    return {
-        "model": model_id,
-        "modelscope_id": MODEL_MODELSCOPE_IDS.get(model_id, ""),
-        "status": "installed" if target.exists() else "idle",
-        "target_dir": str(target),
-        "log_path": "",
-        "message": "已安装" if target.exists() else "",
-        "error": "",
-    }
+    if model_id not in CATALOG:
+        raise HTTPException(404, "未知模型")
+    return dict(model_download_jobs.get(model_id) or {
+        "model": model_id, "status": "installed" if model_installed(model_id, resolve_model_dir(model_id)) else "idle",
+        "target_dir": str(Path(MODELS_DIR) / CATALOG[model_id]["directory"]), "downloaded_bytes": 0,
+        "total_bytes": CATALOG[model_id].get("download_bytes", 0), "error": ""})
 
 
+@app.post("/api/models/{model_id}/download")
 @app.post("/api/models/{model_id}/download-modelscope")
 async def start_modelscope_download(model_id: str):
-    if model_id not in MODEL_DIR_NAMES:
-        raise HTTPException(status_code=404, detail="Unknown model")
-    modelscope_id = MODEL_MODELSCOPE_IDS.get(model_id, "")
-    if not modelscope_id:
-        raise HTTPException(status_code=400, detail="This model has no ModelScope download mapping")
+    try:
+        return start_download(model_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
-    existing = model_download_jobs.get(model_id)
-    if existing and existing.get("status") == "running":
-        return _public_model_download_job(existing)
 
-    target = _safe_model_target(model_id)
-    if target.exists() and any(target.iterdir()):
-        job = {
-            "model": model_id,
-            "modelscope_id": modelscope_id,
-            "status": "installed",
-            "target_dir": str(target),
-            "message": "模型目录已存在",
-        }
-        model_download_jobs[model_id] = job
-        return _public_model_download_job(job)
+@app.post("/api/models/{model_id}/import")
+async def import_local_model(model_id: str, req: ModelImportRequest):
+    try:
+        return import_model(model_id, req.directory)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
 
-    job = {
-        "model": model_id,
-        "modelscope_id": modelscope_id,
-        "status": "running",
-        "target_dir": str(target),
-        "log_path": str(Path(LOGS_DIR, f"model_download_{model_id}.log")),
-        "started_at": time.time(),
-        "message": "下载任务已启动",
-        "error": "",
-    }
-    model_download_jobs[model_id] = job
-    asyncio.create_task(asyncio.to_thread(_run_modelscope_download, model_id, job))
-    return _public_model_download_job(job)
 
 
 @app.post("/api/models/{model_id}/open-folder")
@@ -1844,7 +1758,7 @@ async def get_hardware():
     diagnostics = _runtime_diagnostics()
     torch = diagnostics["torch"]
     nvidia = diagnostics["nvidia"]
-    recommendation = "检测到 NVIDIA GPU，但当前 PyTorch CUDA 不可用；Qwen safetensors 会走 CPU，延迟会明显偏高。"
+    recommendation = "GPU 组件不可用，推荐 SenseVoice INT8，使用 CPU"
     if torch["cuda_available"]:
         recommendation = "PyTorch CUDA 可用，可以继续测试 Qwen CUDA 推理耗时。"
     elif not nvidia.get("available"):
@@ -1986,6 +1900,8 @@ def _run_model_benchmark(model: str, audio_file: str, persist: bool = True, acce
         gpu_backend=bench_backend,
         gpu_required=bench_gpu_required,
         allow_cpu_fallback=config.allow_cpu_fallback,
+        language=config.language,
+        cpu_threads=config.cpu_threads,
     )
     if not engine.initialize():
         result = {
@@ -2078,13 +1994,9 @@ def _benchmark_models(models: Optional[list[str]] = None, audio_file: Optional[s
 def _benchmark_plan_for_model(model: str) -> list[str]:
     if model in ("qwen3-asr-0.6b", "qwen3-asr-1.7b"):
         return ["pytorch-cpu", "pytorch-cuda"]
-    if model == "qwen3-asr-1.7b-gguf-vulkan":
-        return ["gguf-vulkan"]
     if model in ("paraformer", "sensevoice"):
-        return ["sherpa-onnx-cpu", "sherpa-onnx-cuda"]
-    if model == "funasr-nano":
-        return ["sherpa-onnx-cpu", "sherpa-onnx-dml", "sherpa-onnx-vulkan"]
-    return [_default_acceleration_for_model(model)]
+        return ["sherpa-onnx-cpu"]
+    return []
 
 
 @app.get("/api/models/benchmark")
@@ -2097,53 +2009,174 @@ async def get_model_recommendation():
     return _build_recommendation(_load_model_benchmark(), _runtime_diagnostics())
 
 
+def _exclusive_benchmark(callback, *args):
+    if not _lifecycle_lock.acquire(blocking=False):
+        raise HTTPException(409, "正在执行音频任务")
+    try:
+        with activity("switch"):
+            if ProcessManager.check_server_health()["running"]:
+                raise HTTPException(409, "请先停止识别服务，性能测试需要独占模型内存")
+            return callback(*args)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    finally:
+        _lifecycle_lock.release()
+
+
 @app.post("/api/models/benchmark")
 async def post_model_benchmark(req: ModelBenchmarkRequest):
     if req.all:
-        return await asyncio.to_thread(_benchmark_models, req.models, req.audio_file)
+        return await asyncio.to_thread(_exclusive_benchmark, _benchmark_models, req.models, req.audio_file)
     model = req.model or load_app_config().server.model
-    audio_file = req.audio_file or _default_benchmark_audio()
-    return await asyncio.to_thread(_run_model_benchmark, model, audio_file, True, req.acceleration)
+    validate_model(model)
+    return await asyncio.to_thread(_exclusive_benchmark, _run_model_benchmark, model, req.audio_file or _default_benchmark_audio(), True, req.acceleration)
 
 
 @app.post("/api/models/benchmark-all")
 async def post_model_benchmark_all(req: ModelBenchmarkRequest):
-    return await asyncio.to_thread(_benchmark_models, req.models, req.audio_file)
+    return await asyncio.to_thread(_exclusive_benchmark, _benchmark_models, req.models, req.audio_file)
 
 
 @app.post("/api/models/apply-recommendation")
 async def apply_model_recommendation():
-    recommendation = _build_recommendation(_load_model_benchmark(), _runtime_diagnostics())
-    model = recommendation.get("realtime_model")
-    if not model:
-        raise HTTPException(status_code=409, detail=recommendation.get("reason") or "No GPU recommendation available")
-    config = load_app_config()
-    config.server.model = model
-    config.server.model_dir = ""
-    config.server.__post_init__()
-    save_app_config(config)
-    return {"status": "applied", "model": model, "config": app_config_to_dict(config)}
+    model = _build_recommendation({}, _runtime_diagnostics())["realtime_model"]
+    return await apply_recognition(RecognitionApplyRequest(model=model, language=load_app_config().server.language, compute_mode="auto"))
+
+
+def _start_and_wait(config):
+    validate_model(config.model, config.language)
+    if not model_installed(config.model, config.model_dir):
+        raise RuntimeError("模型文件不完整，请先下载或导入模型")
+    result = ProcessManager.start_server(config)
+    if result.get("status") not in {"started", "already_running"}:
+        raise RuntimeError(result.get("message", "无法启动识别服务"))
+    deadline = time.monotonic() + 240
+    while time.monotonic() < deadline:
+        if server_process is not None and server_process.poll() is not None:
+            raise RuntimeError(runtime_state().get("error") or "识别进程退出，请查看诊断日志")
+        state = runtime_state()
+        if state.get("loaded") and ProcessManager._port_open("127.0.0.1", config.port):
+            return state
+        time.sleep(.25)
+    raise RuntimeError("加载模型超时，请检查运行组件和模型文件")
+
+
+def _apply_recognition(req):
+    if not _lifecycle_lock.acquire(blocking=False):
+        raise HTTPException(409, "正在转录或切换识别，请稍后重试")
+    try:
+        with activity("switch"):
+            previous = load_app_config()
+            candidate = copy.deepcopy(previous)
+            candidate.server.model = req.model
+            candidate.server.model_dir = req.model_dir or resolve_model_dir(req.model)
+            candidate.server.language = req.language
+            candidate.server.compute_mode = req.compute_mode
+            candidate.server.__post_init__()
+            validate_model(req.model, req.language)
+            if not model_installed(req.model, candidate.server.model_dir):
+                raise ValueError("请先下载或导入完整模型")
+            if req.compute_mode == "cuda" and (CATALOG[req.model]["backend"] != "qwen-asr" or not _torch_status().get("cuda_available")):
+                raise ValueError("NVIDIA GPU 模式需要可用的 CUDA 运行组件和 Qwen 模型")
+            was_loaded = runtime_state().get("loaded", False)
+            was_client = ProcessManager.check_client_health()["running"]
+            ProcessManager.stop_client()
+            ProcessManager.stop_server()
+            try:
+                state = _start_and_wait(candidate.server)
+                candidate = save_server_config(candidate.server)
+                ProcessManager.start_client()
+                return {"status": "applied", "config": app_config_to_dict(candidate), "runtime": state}
+            except Exception as exc:
+                ProcessManager.stop_server()
+                save_server_config(previous.server)
+                recovery = "原服务未运行"
+                if was_loaded:
+                    try:
+                        _start_and_wait(previous.server)
+                        if was_client:
+                            ProcessManager.start_client()
+                        recovery = "已恢复原来的识别配置"
+                    except Exception as restore_error:
+                        recovery = f"原配置恢复失败：{restore_error}"
+                raise HTTPException(400, f"应用失败：{exc}。{recovery}。可下载 SenseVoice INT8 并选择 CPU") from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(409 if isinstance(exc, RuntimeError) else 400, str(exc)) from exc
+    finally:
+        _lifecycle_lock.release()
+
+
+@app.post("/api/models/apply")
+async def apply_recognition(req: RecognitionApplyRequest):
+    return await asyncio.to_thread(_apply_recognition, req)
 
 
 @app.post("/api/models/select")
 async def select_model(req: ModelSelectRequest):
-    config = load_app_config()
-    config.server.model = req.model
-    config.server.model_dir = req.model_dir or ""
-    config.server.__post_init__()
-    save_app_config(config)
-    return {"status": "selected", "config": app_config_to_dict(config)}
+    config = load_app_config().server
+    return await apply_recognition(RecognitionApplyRequest(model=req.model, model_dir=req.model_dir,
+                                                           language=config.language, compute_mode=config.compute_mode))
+
+
+def _transcription_payload(payload):
+    config = load_app_config().server
+    payload = dict(payload)
+    payload["model"] = payload.get("model") or config.model
+    payload["language"] = payload.get("language") or config.language
+    payload["compute_mode"] = config.compute_mode
+    validate_model(payload["model"], payload["language"])
+    return payload
 
 
 def _launch_transcription_task(task_id: str):
-    config = load_app_config().server
-    transcriptions.run_task(
-        task_id=task_id,
-        default_model=config.model,
-        default_model_dir=config.model_dir,
-        gpu=config.gpu,
-        gpu_backend=config.gpu_backend,
-    )
+    from common.remote_asr import RemoteASREngine
+    with _lifecycle_lock:
+        task = transcriptions.get_task(task_id)
+        if not task or task.get("cancel_requested"):
+            return
+        prior = load_app_config().server
+        old_state = runtime_state()
+        was_loaded = old_state.get("loaded", False)
+        was_client = ProcessManager.check_client_health()["running"]
+        target = copy.deepcopy(prior)
+        target.model = task["model"]
+        target.model_dir = resolve_model_dir(target.model)
+        target.language = task.get("language", "auto")
+        target.compute_mode = task.get("compute_mode", prior.compute_mode)
+        target.__post_init__()
+        changed = not (was_loaded and old_state.get("active_model") == target.model and old_state.get("active_language") == target.language and old_state.get("compute_mode") == target.compute_mode)
+        switched = False
+        try:
+            if changed:
+                with activity("switch"):
+                    ProcessManager.stop_client()
+                    ProcessManager.stop_server()
+                    switched = True
+                    state = _start_and_wait(target)
+            else:
+                state = old_state
+            with activity("transcription"):
+                transcriptions.run_task(task_id, RemoteASREngine(target.port, state))
+        except Exception as exc:
+            transcriptions._update(task_id, status="failed", error=str(exc))
+        finally:
+            if switched:
+                try:
+                    with activity("switch"):
+                        ProcessManager.stop_server()
+                        if was_loaded:
+                            # Restore the actual former model, including an automatic CPU fallback.
+                            restore = copy.deepcopy(prior)
+                            restore.model = old_state.get("active_model", prior.model)
+                            restore.model_dir = old_state.get("model_dir", prior.model_dir)
+                            restore.language = old_state.get("active_language", prior.language)
+                            restore.compute_mode = "cpu" if old_state.get("actual_device") == "cpu" else prior.compute_mode
+                            restore.__post_init__()
+                            _start_and_wait(restore)
+                            if was_client:
+                                ProcessManager.start_client()
+                except Exception as exc:
+                    transcriptions._update(task_id, recovery_error=str(exc))
 
 
 @app.get("/api/ffmpeg/status")
@@ -2164,7 +2197,7 @@ async def put_llm_config(req: LLMConfigRequest):
 @app.post("/api/transcriptions")
 async def create_transcription(req: TranscriptionCreateRequest):
     try:
-        task = transcriptions.create_task(req.model_dump())
+        task = transcriptions.create_task(_transcription_payload(req.model_dump()))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     asyncio.create_task(asyncio.to_thread(_launch_transcription_task, task["task_id"]))
@@ -2183,7 +2216,7 @@ async def upload_transcription(
     saved_paths = transcriptions.save_uploaded_files(files)
     payload["input_files"] = saved_paths
     try:
-        task = transcriptions.create_task(payload)
+        task = transcriptions.create_task(_transcription_payload(payload))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     asyncio.create_task(asyncio.to_thread(_launch_transcription_task, task["task_id"]))
@@ -2265,17 +2298,17 @@ async def reload_hotwords():
 
 @app.post("/api/server/start")
 async def api_start_server():
-    return ProcessManager.start_server()
+    return await api_start_all()
 
 
 @app.post("/api/server/stop")
 async def api_stop_server():
-    return ProcessManager.stop_server()
+    return await api_stop_all()
 
 
 @app.post("/api/client/start")
 async def api_start_client():
-    return ProcessManager.start_client()
+    return await api_start_all()
 
 
 @app.post("/api/client/stop")
@@ -2285,23 +2318,39 @@ async def api_stop_client():
 
 @app.post("/api/start-all")
 async def api_start_all():
-    server_result = ProcessManager.start_server()
-    wait_result = await ProcessManager.wait_server_ready(timeout_seconds=180)
-    if not wait_result.get("ready"):
-        return {
-            "server": server_result,
-            "server_ready": wait_result,
-            "client": {"status": "not_started", "message": "Client was not started because ASR is not ready."},
-        }
-    client_result = ProcessManager.start_client()
-    return {"server": server_result, "server_ready": wait_result, "client": client_result}
+    def start():
+        if not _lifecycle_lock.acquire(blocking=False):
+            raise HTTPException(409, "正在转录或切换识别")
+        try:
+            config = load_app_config().server
+            if runtime_state().get("loaded"):
+                try:
+                    with activity("switch"):
+                        return {"server": {"status": "already_running"}, "client": ProcessManager.start_client()}
+                except RuntimeError as exc:
+                    raise HTTPException(409, str(exc)) from exc
+            return _apply_recognition(RecognitionApplyRequest(model=config.model, model_dir=config.model_dir,
+                                                             language=config.language, compute_mode=config.compute_mode))
+        finally:
+            _lifecycle_lock.release()
+    return await asyncio.to_thread(start)
 
 
 @app.post("/api/stop-all")
 async def api_stop_all():
-    server_result = ProcessManager.stop_server()
-    client_result = ProcessManager.stop_client()
-    return {"server": server_result, "client": client_result}
+    def stop():
+        if not _lifecycle_lock.acquire(blocking=False):
+            raise HTTPException(409, "正在转录或切换识别")
+        try:
+            with activity("switch"):
+                client = ProcessManager.stop_client()
+                server = ProcessManager.stop_server()
+                return {"server": server, "client": client}
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        finally:
+            _lifecycle_lock.release()
+    return await asyncio.to_thread(stop)
 
 
 @app.get("/api/history")
@@ -2385,66 +2434,50 @@ async def get_stats():
 
 @app.websocket("/ws/recognition")
 async def ws_recognition(websocket: WebSocket):
+    if websocket.headers.get("origin") not in (None, "http://127.0.0.1:55343", "http://localhost:55343", "http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
 
-    config = load_app_config().server
-    asr_url = f"ws://127.0.0.1:{config.port}"
-
-    try:
+    async def monitor():
         while True:
+            config = load_app_config().server
             try:
-                caps_ws = await ws_lib.connect(
-                    asr_url,
-                    max_size=None,
-                    ping_interval=20,
-                    ping_timeout=10,
-                )
-                await caps_ws.send(json.dumps({"type": "monitor"}))
-                await websocket.send_json({"type": "connected"})
-                break
-            except Exception:
+                async with ws_lib.connect(f"ws://127.0.0.1:{config.port}", max_size=4 * 1024 * 1024, ping_interval=20, ping_timeout=10) as upstream:
+                    await upstream.send(json.dumps({"type": "monitor"}))
+                    await websocket.send_json({"type": "connected"})
+                    async for message in upstream:
+                        data = json.loads(message)
+                        if data.get("type") == "monitor_ready":
+                            await websocket.send_json(data)
+                        elif data.get("is_final"):
+                            if data.get("error"):
+                                await websocket.send_json({"type": "recognition_error", "error": data["error"]})
+                                continue
+                            entry = history.add_entry(text=data.get("text", ""), task_id=data.get("task_id", ""),
+                                delay=data.get("time_complete", 0) - data.get("time_submit", 0),
+                                audio_path=data.get("audio_path", ""), model=data.get("model", ""),
+                                transcript_path=data.get("transcript_path", ""), duration_seconds=data.get("duration_seconds"))
+                            await websocket.send_json({"type": "result", **entry})
+                        else:
+                            await websocket.send_json({"type": "partial", "text": data.get("text", "")})
+            except (OSError, ws_lib.ConnectionClosed):
                 await websocket.send_json({"type": "connecting"})
                 await asyncio.sleep(2)
 
+    async def disconnected():
         while True:
-            try:
-                message = await caps_ws.recv()
-                data = json.loads(message)
-                if data.get("type") == "monitor_ready":
-                    await websocket.send_json({"type": "monitor_ready", **data})
-                    continue
-                if data.get("is_final"):
-                    entry = history.add_entry(
-                        text=data.get("text", ""),
-                        task_id=data.get("task_id", ""),
-                        delay=data.get("time_complete", 0) - data.get("time_submit", 0),
-                        audio_path=data.get("audio_path", ""),
-                        model=data.get("model", ""),
-                        transcript_path=data.get("transcript_path", ""),
-                        duration_seconds=data.get("duration_seconds"),
-                    )
-                    await websocket.send_json({"type": "result", **entry})
-                else:
-                    await websocket.send_json({
-                        "type": "partial",
-                        "text": data.get("text", ""),
-                    })
-            except ws_lib.ConnectionClosed:
-                await websocket.send_json({"type": "disconnected"})
-                break
-    except WebSocketDisconnect:
-        pass
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
 
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(_health_check_loop())
-
-
-async def _health_check_loop():
-    while True:
-        await asyncio.sleep(10)
-        ProcessManager.auto_restart()
+    tasks = [asyncio.create_task(monitor()), asyncio.create_task(disconnected())]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def main():

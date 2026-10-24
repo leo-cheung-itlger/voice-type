@@ -1,6 +1,23 @@
 # CHANGELOG
 
+## 2026-10-24
+
+- 新增自动／CPU／NVIDIA GPU 策略，保留旧配置的显式选择；CPU 使用官方 SenseVoice INT8 ONNX，未实现后端禁用。
+- 新增默认普通话的识别语言，支持能力校验、任务创建时快照、录音保护、应用失败回滚；模型和语言统一应用重启。
+- 模型下载改用正确格式与官方来源，支持校验、续传、重试和导入；移除下载时安装 SDK 的路径。
+- 首页简化版本、状态和快捷键文案，模型名称可点击；诊断移入高级区域，删除重复加速统计。
+- 文件转录复用运行服务，串行切换并恢复原模型；FFmpeg 分块解码，实时列表有上限、历史分页并保留完整元数据，统计缓存，前端轮询防重叠。
+- 新增隔离的嵌入式 CPU Python、固定依赖锁、可选 CUDA 组件和便携构建脚本；发布目录相对路径、自包含录音增强组件及基础录音回退。
+- 本机 CPU／CUDA 的普通话、自动、英语、粤语识别和文件转录通过；构建、回归和界面结果以 PROJECT_STATUS.md 为准。干净 Windows 与真实低配验收未完成，不发布二进制预发行包。
+
+
+- Revalidated the existing live runtime after storage cleanup; no application code or configuration was changed. See `PROJECT_STATUS.md` for the startup, CUDA, reference-audio and browser verification results and the then-missing start-runtime caveat (restored later in this entry). Retained all existing working-tree edits and left the tested services running for the user.
+
 ## 2026-05-04
+
+- Added `scripts/asr_latency_probe.py` to compare VoiceType ASR WebSocket upload modes using the same archived WAV: one-shot batch, 50ms chunked upload, and 50ms paced realtime simulation. The probe records send time, post-`audio_end` wait, server inference time, recognized text, model, and writes ignored runtime history to `data/asr_latency_probe.json` unless `--no-write` is used.
+- Confirmed the local top-level `C:\Program Files\CapsWriter-Offline-Windows-64bit` app is not a v2.5 Qwen3-ASR-GGUF runtime: its `util/server_init_recognizer.py` hard-codes Paraformer through `sherpa_onnx.OfflineRecognizer.from_paraformer`, while the installed `Qwen3-ASR-1.7B` folder is safetensors/PyTorch model data that this old CapsWriter server does not load.
+- Validation: `py_compile scripts\asr_latency_probe.py` passed; probing the current managed ASR server with a 2.71s archived WAV on `qwen3-asr-0.6b` returned the same text for batch, chunked, and realtime modes. Batch measured about `0.94s` server inference, non-paced 50ms chunked measured about `0.89s`, and paced realtime measured about `0.49s` post-end wait after the simulated recording-time upload.
 
 - Switched the main VoiceType recording path to default-on Windows `MediaCapture` voice-mode capture, with Settings exposing a `Windows 语音增强采集` toggle and automatic fallback to the existing PyAudio/WASAPI path if the helper cannot start.
 - Updated `client/recorder.py`, `client/client_core.py`, `/api/audio/test-input`, and Settings so live Caps Lock recording, saved `recording.wav`, ASR input audio, microphone test playback, and `result.json` all record the actual `capture_backend`. Windows voice capture now reports `windows_mediacapture` plus `VoiceTyping / Default`, while PyAudio fallback continues to expose channel strategy and optional auto-gain metadata.

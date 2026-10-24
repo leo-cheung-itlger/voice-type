@@ -4,22 +4,23 @@
       <div>
         <div class="brand-row">
           <div class="brand">VoiceType</div>
-          <span class="version-badge" :title="store.appBuildTime">{{ store.appBuildLabel }}</span>
+          <span class="version-badge">{{ store.appVersionLabel }}</span>
         </div>
-        <div class="subline">{{ store.serviceLabel }} · {{ store.config.server.model }} · {{ store.frontendSource }}</div>
+        <button class="model-switch" aria-label="切换识别模型" @click="openModelSettings">
+          <span>{{ store.activeModelLabel }}</span>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 3 5 5-5 5" /></svg>
+        </button>
       </div>
-      <div class="status-pills" aria-label="service status">
-        <span class="pill" :class="{ on: store.serverRunning }">ASR</span>
-        <span class="pill" :class="{ on: store.clientRunning }">Client</span>
-        <span class="pill" :class="{ on: store.wsConnected }">Live</span>
+      <div class="status-pills" role="status" aria-label="语音输入状态">
+        <span class="pill" :class="{ on: store.serverRunning && store.clientRunning && store.wsConnected }">{{ store.serviceLabel }}</span>
       </div>
     </header>
 
     <section v-if="store.lastError && !startupVisible" class="error-strip">
       <div>
-        <strong>运行时连接异常</strong>
+        <strong>操作未完成</strong>
         <p>{{ store.lastError }}</p>
-        <small>API: {{ store.apiBase }}</small>
+
         <pre v-if="store.runtimeDiagnostics">{{ store.runtimeDiagnostics }}</pre>
       </div>
       <div class="error-actions">
@@ -67,11 +68,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAppStore } from './stores/app'
 
 const store = useAppStore()
+const router = useRouter()
 let timer: ReturnType<typeof setInterval> | null = null
+let refreshing = false
 let unlistenSingleInstance: (() => void) | null = null
 let unlistenRuntimeToast: (() => void) | null = null
 const startupVisible = ref(true)
@@ -80,6 +84,14 @@ const startupDetail = ref('正在连接本地 VoiceType API')
 const startupStartedAt = ref(Date.now())
 const startupErrorDelayMs = 45000
 const startupFailed = computed(() => Boolean(store.lastError && startupVisible.value))
+
+async function openModelSettings() {
+  await router.push('/settings#models')
+  await nextTick()
+  const section = document.getElementById('models')
+  section?.scrollIntoView({ block: 'start' })
+  section?.focus({ preventScroll: true })
+}
 
 async function wireTauriEvents() {
   const tauriWindow = window as any
@@ -100,6 +112,7 @@ async function wireTauriEvents() {
 }
 
 function updateStartupState() {
+  if (!startupVisible.value) return
   const withinStartupGrace = Date.now() - startupStartedAt.value < startupErrorDelayMs
   if (withinStartupGrace && store.lastError.startsWith('无法连接 VoiceType API')) {
     store.lastError = ''
@@ -110,25 +123,12 @@ function updateStartupState() {
     startupDetail.value = store.lastError
     return
   }
-  if (!store.serverRunning) {
-    startupVisible.value = true
-    startupStage.value = '启动 API 和 ASR 服务'
-    startupDetail.value = '模型加载中，暂不可录音'
-    return
+  if (store.apiReady) {
+    startupVisible.value = false
+  } else {
+    startupStage.value = '连接本地服务'
+    startupDetail.value = '首次启动无需先下载模型'
   }
-  if (!store.clientRunning) {
-    startupVisible.value = true
-    startupStage.value = '启动录音客户端'
-    startupDetail.value = '正在加载快捷键监听和麦克风配置'
-    return
-  }
-  startupStage.value = '完成'
-  startupDetail.value = '本地运行时已就绪'
-  window.setTimeout(() => {
-    if (!store.lastError && store.serverRunning && store.clientRunning) {
-      startupVisible.value = false
-    }
-  }, 700)
 }
 
 async function restartStartupRuntime() {
@@ -148,18 +148,23 @@ onMounted(async () => {
   startupStage.value = '连接本地 API'
   await Promise.all([
     store.fetchConfig(),
-    store.fetchStatus(),
     store.fetchHealth(),
     store.fetchHistory(),
-    store.fetchStats(),
     store.fetchModels(),
     store.fetchHardware(),
-    store.fetchAudioInputDevices(),
   ])
   updateStartupState()
   store.connectRecognition()
-  timer = setInterval(() => {
-    Promise.all([store.fetchStatus(), store.fetchHealth()]).then(updateStartupState)
+  timer = setInterval(async () => {
+    if (refreshing) return
+    refreshing = true
+    try {
+      await store.fetchHealth(8000)
+      store.connectRecognition()
+      updateStartupState()
+    } finally {
+      refreshing = false
+    }
   }, 5000)
 })
 

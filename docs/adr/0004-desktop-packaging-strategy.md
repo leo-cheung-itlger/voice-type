@@ -2,28 +2,26 @@
 
 ## Status
 
-Accepted
+Accepted; updated 2026-10-24 for independent portable alpha.
 
 ## Context
 
-VoiceType currently has a working Vue control console and Python runtime. The user wants a real desktop window with tray minimize, tray quit, and eventual EXE packaging. The runtime still depends on external model files, a Python virtual environment, local ffmpeg, and GPU-specific model performance decisions.
+The Vue / Tauri / Python architecture works, but a portable EXE that depends on a development venv is not an independent distribution. CPU users should not download the complete CUDA environment.
 
 ## Decision
 
-Use Tauri as the desktop shell, but stage packaging:
-
-1. Build a Tauri development shell first.
-2. Ship a portable Windows alpha before a formal installer.
-3. Keep models outside the application bundle for now.
-4. Use tray Quit as the only full-exit path; the window close button hides to tray.
-5. Defer macOS packages until the Windows lifecycle is stable and a macOS build host is available.
-
-## Rationale
-
-A portable alpha is safer while runtime behavior is still changing. It avoids registry/start-menu/update complexity and makes it easy to inspect logs and replace models. A formal installer is useful later for shortcuts, auto-start, upgrades, and bundled runtime management, but it should not be the first package while ASR process lifecycle and model recommendations are still being tuned.
+1. Target Windows 10/11 x64 portable alpha first. Keep the existing application architecture.
+2. Bundle isolated CPython 3.12 x64 and hash-locked CPU dependencies. Disable site/user-site lookup; resolve files relative to the release root marked by portable.json.
+3. Distribute the locked CUDA/Qwen runtime as an optional version-matched, checksummed component. Split assets to respect the hosting size limit. Do not install packages at user startup.
+4. Download compatible model weights only after an explicit user action; support existing-model import. Keep models separate from the base archive.
+5. Store data, logs and downloaded models inside the portable directory. Imported paths remain external and are shown explicitly.
+6. Publish the Windows capture helper as self-contained; fall back to basic recording when unavailable. Provide official WebView2 installation guidance.
+7. Closing the window hides it to tray; tray Quit exits the runtime. A formal installer, other operating systems and AMD/Intel GPU acceleration remain deferred.
+8. Publish binaries only after clean Windows acceptance and third-party redistribution materials are complete. A local build is not a release acceptance result.
 
 ## Consequences
 
-- The first desktop package may require being run from the project/runtime folder.
-- The Python `venv`, model directories, and ffmpeg remain external until a later packaging phase.
-- The Tauri shell can validate real window/tray behavior before installer work starts.
+- End users do not need system Python, a development checkout or .NET SDK.
+- The optional CUDA component remains large because it includes upstream Qwen runtime dependencies; the CPU base avoids this cost.
+- Clean-host testing must cover non-ASCII and space-containing paths, recording fallback, hotkey output and restart/quit lifecycle.
+- Runtime dependencies, model downloads and FFmpeg have separate license obligations; source publication does not imply a binary release is ready.

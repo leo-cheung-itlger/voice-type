@@ -100,14 +100,74 @@ button {
   white-space: nowrap;
 }
 
-.subline {
+.model-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   margin-top: 3px;
-  max-width: 230px;
-  overflow: hidden;
+  max-width: 100%;
+  padding: 3px 0;
   color: var(--muted);
+  background: transparent;
   font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-switch span {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.model-switch svg {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.model-switch:hover {
+  color: var(--accent);
+}
+
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+#models:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.topbar > div:first-child {
+  min-width: 0;
+}
+
+.status-pills {
+  flex: 0 0 auto;
+}
+
+.build-details {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.build-details summary {
+  cursor: pointer;
+}
+
+.build-details p {
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.model-help {
+  margin-bottom: 10px;
 }
 
 .status-pills {

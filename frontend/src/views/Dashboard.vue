@@ -21,8 +21,8 @@
       <div class="panel">
         <div class="row">
           <div>
-            <div class="value">ASR 服务端</div>
-            <div class="label">{{ serverLabel }}</div>
+            <div class="value">语音识别</div>
+            <div class="service-detail" :title="store.serverPid ? `进程 ID：${store.serverPid}` : ''">{{ serverLabel }}</div>
           </div>
           <button
             class="btn btn-small"
@@ -35,8 +35,8 @@
         </div>
         <div class="row">
           <div>
-            <div class="value">录音客户端</div>
-            <div class="label">{{ clientLabel }}</div>
+            <div class="value">快捷键录音</div>
+            <div class="service-detail" :title="store.clientPid ? `进程 ID：${store.clientPid}` : ''">{{ clientLabel }}</div>
           </div>
           <button class="btn btn-small" :class="store.clientRunning ? 'btn-danger' : 'btn-primary'" @click="toggleClient">
             {{ store.clientRunning ? '停止' : '启动' }}
@@ -44,15 +44,15 @@
         </div>
         <div class="row">
           <div>
-            <div class="value">控制台连接</div>
-            <div class="label">{{ store.wsConnected ? '正在监听识别结果' : '未连接到 API WebSocket' }}</div>
+            <div class="value">识别结果同步</div>
+            <div class="service-detail">{{ store.wsConnected ? '已连接，识别后自动更新' : '连接已断开，请重连' }}</div>
           </div>
-          <button class="btn btn-small btn-ghost" @click="store.connectRecognition()">重连</button>
+          <button class="btn btn-small btn-ghost" :disabled="store.wsConnected" @click="store.connectRecognition()">重连</button>
         </div>
         <div class="row acceleration-row">
           <div>
             <div class="value">当前加速</div>
-            <div class="label">{{ store.accelerationState.detail }}</div>
+            <div class="service-detail">{{ store.accelerationState.detail }}</div>
           </div>
           <span class="accel-badge" :class="{ ok: store.accelerationState.active }">
             {{ store.accelerationState.label }}
@@ -64,15 +64,11 @@
     <section class="section quick-stats">
       <div>
         <strong>{{ store.totalEntries }}</strong>
-        <span>次数</span>
+        <span>近期识别次数</span>
       </div>
       <div>
         <strong>{{ store.avgDelay }}s</strong>
-        <span>平均</span>
-      </div>
-      <div>
-        <strong>{{ store.accelerationState.backend }}</strong>
-        <span>加速</span>
+        <span>近期平均耗时</span>
       </div>
     </section>
 
@@ -112,12 +108,7 @@
       </div>
     </section>
 
-    <section v-if="store.recentIssues.length" class="section">
-      <div class="section-title"><span>最近问题</span></div>
-      <div class="panel issue-list">
-        <div v-for="(issue, i) in store.recentIssues.slice(-3)" :key="i" class="issue-line">{{ issue.line }}</div>
-      </div>
-    </section>
+
   </div>
 </template>
 
@@ -127,17 +118,19 @@ import { useAppStore } from '../stores/app'
 import type { HistoryEntry } from '../stores/app'
 
 const store = useAppStore()
-const recentEntries = computed(() => [...store.history].slice(-10).reverse())
+const recentEntries = computed(() => store.history.slice(-10).reverse())
 const serverLabel = computed(() => {
   if (store.serverConflict) return `发现 ${store.serverProcessCount} 个实例或端口冲突`
-  if (store.serverRunning && store.serverManaged) return `托管运行 PID ${store.serverPid || '-'}`
+  if (store.serverRunning && store.serverManaged) return '运行中'
   if (store.serverRunning && !store.serverManaged) return `外部服务占用端口 ${store.config.server.port}`
   return '等待启动'
 })
 const clientLabel = computed(() => {
   if (store.clientConflict) return `发现 ${store.clientProcessCount} 个客户端实例`
-  if (store.clientRunning) return `PID ${store.clientPid || '-'} · ${store.config.client.shortcut_key}`
-  return store.config.client.shortcut_key
+  const key = store.config.client.shortcut_key.trim().toLowerCase().replace(/[\s-]+/g, '_')
+  const names: Record<string, string> = { caps_lock: 'Caps Lock', capslock: 'Caps Lock', left_shift: '左 Shift', right_shift: '右 Shift', space: '空格键' }
+  const shortcut = names[key] || key.toUpperCase().replace(/_/g, ' ')
+  return store.clientRunning ? `按住 ${shortcut} 说话，松开后输入` : `未启动 · 录音快捷键 ${shortcut}`
 })
 const serverButtonLabel = computed(() => {
   if (store.serverConflict) return '冲突'
@@ -147,7 +140,7 @@ const serverButtonLabel = computed(() => {
 })
 
 async function refresh() {
-  await Promise.all([store.fetchStatus(), store.fetchHealth(), store.fetchHistory()])
+  await Promise.all([store.fetchHealth(), store.fetchHistory()])
 }
 
 async function toggleServer() {
@@ -198,7 +191,7 @@ function formatDuration(entry: HistoryEntry) {
 
 .quick-stats {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 8px;
 }
 
@@ -229,6 +222,14 @@ function formatDuration(entry: HistoryEntry) {
 
 .acceleration-row {
   align-items: flex-start;
+}
+
+.service-detail {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .accel-badge {

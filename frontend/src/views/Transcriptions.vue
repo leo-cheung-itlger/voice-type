@@ -26,15 +26,17 @@
         <label class="row setting-row">
           <span>
             <span class="value">模型</span>
-            <span class="label">文件转录独立于右 Shift 输入</span>
+            <span class="label">复用识别服务；更换模型时暂停快捷键输入，完成后恢复</span>
           </span>
           <select v-model="selectedModel" class="field compact">
             <option value="">使用当前模型</option>
-            <option v-for="model in store.models" :key="model.id" :value="model.id" :disabled="!model.exists">
+            <option v-for="model in store.models" :key="model.id" :value="model.id" :disabled="!model.exists || !model.implemented">
               {{ model.name }}{{ model.exists ? '' : ' - 缺失' }}
             </option>
           </select>
         </label>
+        <div class="row setting-row"><span class="value">识别语言</span><span>{{ languageNames[store.config.server.language] || store.config.server.language }}（创建任务时保存）</span></div>
+        <div v-if="selectedModel && selectedModel !== store.runtime.active_model" class="row label">此任务将暂时暂停快捷键输入并切换模型。</div>
         <div class="row setting-row align-start">
           <span>
             <span class="value">导出格式</span>
@@ -105,7 +107,7 @@
           <small v-if="task.error">{{ task.error }}</small>
           <div v-for="file in task.files" :key="file.path" class="output-row">
             <span>{{ shortName(file.path) }}</span>
-            <small>{{ file.status }} {{ file.error || '' }}</small>
+            <small>{{ statusLabel(file.status) }} {{ file.error || '' }}</small>
           </div>
           <button v-if="['queued','transcribing','polishing'].includes(task.status)" class="btn btn-small btn-ghost" @click="store.cancelTranscription(task.task_id)">
             取消
@@ -138,6 +140,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useAppStore } from '../stores/app'
 
 const store = useAppStore()
+const languageNames: Record<string, string> = {zh:'普通话',auto:'自动检测',en:'英语',yue:'粤语',ja:'日语',ko:'韩语'}
 const fileInput = ref<HTMLInputElement | null>(null)
 const dragging = ref(false)
 const pendingFiles = ref<File[]>([])
@@ -156,6 +159,7 @@ const canCreatePathTask = computed(() => Boolean(pathText.value.trim() && store.
 function payload() {
   return {
     model: selectedModel.value || undefined,
+    language: store.config.server.language,
     output_dir: outputDir.value.trim() || undefined,
     formats: formats.value,
     polish: polish.value,

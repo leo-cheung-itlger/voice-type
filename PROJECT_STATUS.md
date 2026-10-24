@@ -1,72 +1,48 @@
 # PROJECT_STATUS
 
-## Current Status
+## 当前交付状态（2026-10-24）
 
-- Status: Phase 1/2 implementation in progress; Web control console is now the primary daily development/testing entry through Live UI, with persisted config, operational APIs, a working first file-transcription workspace, VoiceType-specific ports, a verified CUDA route for the installed Qwen model, a compiled Tauri 1.0.0 desktop shell for packaged releases, event-based special-key hotkey listening, runtime diagnostics, hot-reloading microphone selection, automatic microphone gain for quiet captures, Windows voice-enhanced capture as the default recording backend, and cleaned-up Settings/History archive controls.
-- Active goal: stabilize VoiceType daily voice input, then expand the same frontend into Tauri with file transcription and subtitle export.
-- Current blocker: none. Windows `MediaCapture` voice-mode capture tested better on the user's 3.5mm microphone and is now wired into the main recording path with fallback to PyAudio/WASAPI.
-- Governance note: every substantial task now requires an explicit validation gate and browser/runtime checks for UI work.
+Windows x64 便携测试版的硬件策略、语言、模型管理和打包代码已实现。源码仓库为 https://github.com/leo-cheung-itlger/voice-type 。**二进制预发行尚未发布，不能宣称下载即用或全面硬件兼容。**
 
-## Current Architecture
+## 当前架构与决策
 
-- Python ASR server: `server/asr_server.py`, `server/asr_engine.py`
-- Python input/output client: `client/client_core.py`, `client/output.py`, `client/recorder.py`
-- API/control backend: `api/api_server.py`
-- Shared modules: `common/`, `config/`
-- Frontend: `frontend/` using Vue 3, TypeScript, Vite, Pinia, and Vue Router; designed as a compact desktop control window that now expands to the full Tauri/browser viewport without horizontal page scroll
-- File transcription queue: `common/transcription.py` plus `/api/transcriptions*`, `/api/ffmpeg/status`, and `/api/llm/config`
-- Runtime ports: ASR `55341`, API `55342`, frontend `55343`
-- Desktop shell: `frontend/src-tauri/` uses Tauri v2, with a 480x720 window, single-instance handling, tray Show/Quit menu, close-to-tray behavior, and runtime startup through `scripts/start-runtime.ps1`
-- Live UI entry: `VoiceType-live-ui.bat` starts the project runtime plus Vite at `http://127.0.0.1:55343/#/` and opens the latest source UI in a browser. Use this for daily frontend validation; use the portable EXE only when validating a packaged release.
-- Daily recording archive: valid hotkey recordings now use `data/archive/YYYY/MM/DD/HHMMSS_<task_id>/recording.wav` plus `result.json`; short presses below `client.min_press_seconds` are ignored before ASR submission.
-- Microphone selection: Settings reads `/api/audio/input-devices`, defaults to a deduplicated recommended physical-input list, persists `client.input_device_index`, `client.input_device_name`, `client.input_device_host_api`, `client.input_device_sample_rate`, `client.windows_voice_capture_enabled`, and `client.auto_gain_enabled`, applies client-side changes on the next key press without restart, tests microphones with the same active backend as the main recorder, and can open a separate `麦克风高级检测` window. Real-time Caps Lock recording now prefers Windows `MediaCapture` voice-mode capture (`MediaCategory=VoiceTyping`, `AudioProcessing=Default`) and automatically falls back to PyAudio/WASAPI if the helper cannot start; saved `recording.wav`, ASR input audio, and `result.json` all record the actual capture backend.
-- Agent integration guide: `.agents/skills/voicetype-transcription/SKILL.md`
-- Microphone processing test: `http://127.0.0.1:55343/mic-test.html`
-- Windows voice capture helper: `tools/windows_voice_capture/`
-- Microphone format probe: `scripts/mic_format_probe.py`
-- Historical handoff: `PROJECT_SUMMARY.md`
+- Vue 3 / Vite / Pinia、Tauri 2 桌面壳、Python API / ASR / 快捷键客户端保持不变。端口为 ASR 55341、API 55342、开发 UI 55343，仅监听本机。
+- API 可独立打开，首次启动不预加载模型。设置下载或导入后，使用“应用并重启识别”。运行方式为 auto / cpu / cuda；默认语言 zh，原显式 CPU／严格 GPU 配置保留。
+- CPU 基础路线为 sherpa-onnx SenseVoice INT8，Paraformer 是中英自动识别选项。Qwen 0.6B／1.7B 使用可选 PyTorch CUDA 组件。GGUF / Vulkan / FunASR Nano 后端不可选。模型能力和格式的唯一代码定义在 common/model_catalog.py。
+- 同模型文件转录复用 ASR；切换模型／语言的任务暂停快捷键输入，串行执行并恢复服务。任务保存创建时的语言和硬件策略；旧任务不补写语言。SRT 仍是分块近似时间戳。
+- 活动租约保护录音、推理、转录和切换。配置单独保存 server 部分，避免覆盖加载期间修改的麦克风设置。
+- 便携包使用应用内隔离 Python，CPU 不含 PyTorch；CUDA 组件另下载。模型、数据、日志位于便携目录；导入模型仍在原目录。启动脚本已恢复并校验端口归属。
+- Windows MediaCapture 语音增强默认启用，缺失／不支持时回退 PyAudio；打包包含自包含录音增强程序，用户不需要 .NET SDK。现有麦克风热更新、单声道选择、自动增益和录音归档保留。
+- 日常开发入口为 VoiceType-live-ui.bat；便携 EXE 仅用于发布验收。构建标识和 PID 在高级诊断中查看。
 
-## Validation Baseline
+## 已执行验证
 
-- Python syntax compile: passed on 2026-05-03 for the capture-profile and validation-script changes.
-- Hotkey normalization smoke: passed on 2026-05-01 for legacy and snake_case `caps_lock`, `left_shift`, `right_shift`, and aggregate `shift` matching.
-- Frontend typecheck and production build: passed on 2026-05-03 with `node node_modules\vue-tsc\index.js --noEmit` and `npm run build`.
-- API smoke: passed on 2026-05-01 for `/api/status`, `/api/health`, `/api/config`, and `/api/models`; `/api/models` includes download links and `/api/models/{id}/open-folder` opened the expected model root.
-- Browser smoke: Browser Use remains blocked because its Node runtime requires `>=22.22.0` while the installed Node is `22.21.0`; Playwright fallback passed on 2026-05-04 for Settings/History cleanup with no console errors.
-- Client smoke: UI-started client stays running after startup and no longer crashes on the `websockets` `.closed` compatibility issue.
-- ASR startup race smoke: `start-runtime.ps1` now waits for ASR readiness before the client is started; 2026-05-02 restart showed `server.managed=true`, `client.managed=true`, and client shortcut `caps_lock`.
-- Recording feedback smoke: client-side beep/topmost desktop notification module runs without errors; Settings page exposes notification and sound toggles.
-- Model smoke: selected `qwen3-asr-1.7b` resolves to the existing local CapsWriter model directory at `C:\Program Files\CapsWriter-Offline-Windows-64bit\models\Qwen3-ASR-1.7B` and loads onto `NVIDIA GeForce RTX 5070 Ti Laptop GPU` through PyTorch CUDA.
-- Fixture ASR smoke: direct model recognition passed 3/3 mp3 samples; WebSocket service recognition through the current managed ASR server passed 3/3 samples on 2026-04-29 and 1/1 on 2026-05-02 after the startup race fix.
-- Runtime smoke: `stop.bat` releases `55341/55342/55343`; `start.bat` starts API/frontend/ASR/client; current API reports `server.managed=true`, `client.managed=true`, and no process conflicts.
-- File transcription API smoke: local ffmpeg is available at `tools/ffmpeg/bin/ffmpeg.exe`; mp3 and generated mp4 transcription tasks completed and produced JSON/TXT/SRT outputs on 2026-04-29.
-- Browser transcription page smoke: `http://127.0.0.1:55343/#/transcriptions` loads, no longer shows ffmpeg missing, and has no new console errors.
-- Qwen route note: `Qwen3-ASR-1.7B` is installed and remains the high-quality GPU model. Latest fixed mp3 benchmark measured `qwen3-asr-1.7b::pytorch-cuda` at about 31.79s cold load plus 4.61s inference, versus `qwen3-asr-1.7b::pytorch-cpu` at about 15.56s load plus 17.76s inference. `Qwen3-ASR-0.6B` and `Qwen3-ASR-1.7B-GGUF` are listed as low-latency/GPU candidates but are not installed locally yet.
-- Benchmark harness: `scripts/model_benchmark.py` and `/api/models/benchmark-all` write per-model/mode records to ignored runtime data at `data/model_benchmark.json`, including missing-model records without fake inference timings. Paraformer CPU now initializes correctly through `OfflineRecognizer.from_paraformer` and measured about 0.16s inference, but sherpa-onnx CUDA is unavailable in the current Python environment and is blocked under `gpu_required=true`.
-- Microphone diagnostics smoke: the updated `/api/audio/input-devices` on a temporary API port returned 20 total inputs and 5 recommended visible inputs, including `3.5mm麦克风` and `麦克风阵列` DirectSound/WASAPI options. `/api/audio/test-input` opened the default input, measured PCM level, returned a playable WAV payload, and correctly reported no effective signal while no one was speaking.
-- Advanced microphone scan smoke: `/api/audio/scan-levels` on temporary API port `55442` scanned 20 inputs in about 1.55s, detected 5 active sources, returned waveform arrays, and showed 3.5mm/array DirectSound inputs with live RMS around 5.7% during the test window.
-- Dashboard audio playback smoke: frontend build passed with recent-record play/stop and copy SVG actions. The audio file endpoint is restricted to history task recordings under VoiceType data/archive directories.
-- Desktop shell smoke: MSVC Build Tools are installed and available through `VsDevCmd.bat`; Tauri 1.0.0 build passed on 2026-05-02 using `CARGO_TARGET_DIR=frontend/src-tauri/target-codex-build7`. The latest compiled EXE was copied to `dist/releases/VoiceType-1.0.0/VoiceType-1.0.0-portable-build7.exe`.
-- Microphone hot-reload smoke: Python compile passed on 2026-05-03 for the shared audio device policy and client reload path; frontend typecheck/build passed; temporary API smoke on `55442` resolved the saved 3.5mm microphone from old index `1` to WASAPI index `20` while keeping NetEase virtual inputs out of recommended defaults.
-- WASAPI sample-rate smoke: PyAudio confirmed 3.5mm WASAPI device `20` supports `48000Hz` and rejects `44100Hz`; recorder smoke now skips unsupported rates, records at `48000Hz`, and no longer emits the `Failed to open input stream at 44100Hz` warning. Temporary API smoke on `55442` returned `ok=true`, `sample_rate=48000`, and a WAV preview for `/api/audio/test-input`. Frontend typecheck and production build passed after the startup/GPU/mic-test UI changes.
-- Audio regression smoke: on 2026-05-03 the local Qwen model still recognized the user-provided reference audio exactly; the new `scripts\validate_audio_regression.py` harness replayed that reference file through the laptop speaker and validated that `3.5mm麦克风 (Senary Audio) / Windows WASAPI / 48000Hz / 2ch` produced the exact target sentence. A direct channel split check on `麦克风阵列 (Senary Audio) / Windows WASAPI / 48000Hz / 2ch` also produced the exact target sentence once the stereo normalization bug was fixed. `/api/audio/test-input` now reports `capture_host_api`, `capture_channels`, `normalized_strategy`, `quality_state`, and `recognized_text`, and returns `太安静` instead of a false positive when nothing is being played.
-- Caps Lock realtime capture smoke: passed on 2026-05-04. `AudioRecorder.stop()` honors the remembered `preferred_normalized_strategy`, the drain loop no longer sleeps an extra 20ms after each blocking read, and the client records `held_seconds`, `recorded_duration_seconds`, and `capture_realtime_ratio` for every submitted Caps Lock recording. A direct real-device recorder smoke captured 2.000s over 2.015s elapsed (`capture_realtime_ratio=0.993`) on `3.5mm麦克风 / Windows WASAPI / 48000Hz / 2ch`; final user-side check should confirm a roughly 3-second Caps Lock hold produces natural-speed playback.
-- Capture auto-gain smoke: passed on 2026-05-04. Shared capture now applies default-on post-capture PCM16 auto gain after mono channel selection, targeting about `0.08` RMS with a `20dB` max gain and `0.95` peak limit. Synthetic checks confirmed quiet audio is amplified, loud audio is not further boosted, and silence remains `too_quiet`; the user-provided quiet `recording.wav` was amplified by `17.668dB` to `rms_ratio=0.079999` and `peak_ratio=0.75943`, then recognized successfully by the running `qwen3-asr-1.7b` service. `/api/audio/test-input` returned the new gain fields and correctly skipped gain for a silence-level sample.
-- Windows voice capture smoke: passed on 2026-05-04 for helper/API/main-recorder integration. `tools/windows_voice_capture` builds successfully and records through Windows `MediaCapture` with `MediaCategory=VoiceTyping` and `AudioProcessing=Default`; direct helper/API-function smoke recorded `3.5mm麦克风 (Senary Audio)` as `16000Hz / 1ch / PCM16` with `rms_ratio=0.041397`; `AudioRecorder` smoke now returns `capture_backend=windows_mediacapture`; `/api/audio/test-input` now follows the same backend and returned `capture_backend=windows_mediacapture`, `sample_rate=16000`, and `quality_state=ok` on a live sample; Playwright confirmed Settings shows a default-on `Windows 语音增强采集` toggle.
-- Browser microphone test smoke: passed on 2026-05-04. `/mic-test.html` is now a developer-only plain HTML page outside the VoiceType Vue app. It compares browser audio processing off/on against the current VoiceType backend recorder. `/api/audio/browser-probe` converted the user-provided `声音大小测试.webm` to `16kHz / mono / PCM16 WAV` and recognized the expected sentence through `qwen3-asr-0.6b`; `/api/audio/format-probe` still produced backend raw/channel/16k WAVs. Playwright loaded `/mic-test.html` with no console errors and confirmed the main app still has 6 bottom tabs.
-- Microphone format probe smoke: passed on 2026-05-04. `scripts/mic_format_probe.py --seconds 1 --no-asr` recorded from `3.5mm麦克风 (Senary Audio) / Windows WASAPI / 48000Hz / 2ch` and wrote raw/minimal/ASR WAVs plus `result.json` under ignored `data/mic_format_tests/`. Full `--seconds 1` loaded Qwen3-ASR 1.7B on CUDA and ran recognition on channel 0, channel 1, and 16k mono candidates. The validation sample was silence-level input, so ASR text was empty by design. ffprobe confirmed `raw_48k_stereo.wav` is `pcm_s16le / 48000Hz / 2ch / 16-bit` and `standard_asr_16k_mono.wav` is `pcm_s16le / 16000Hz / 1ch / 16-bit`.
-- Settings/History UX smoke: passed on 2026-05-04. Model rows now use shorter status summaries, missing Qwen/GGUF downloads open a one-click ModelScope download plus official webpage chooser, History no longer prints full archive paths in every row, and top-level/per-entry audio/result directory buttons are visible.
-- Live UI workflow: added on 2026-05-03. It is now the default way to verify frontend fixes without rebuilding the Tauri EXE.
+- Python 编译及 tests/test_runtime_contracts.py 的 13 项回归通过（含中文词表路径、历史保留、停止时健康检查竞态）：旧配置迁移、语言／模型契约、下载续传、活动互斥、自动回退与严格 GPU 失败、失败回滚、并发保存、启动互斥。
+- 前端类型检查和生产构建通过；主入口约 120.8 KB，gzip 46.7 KB。Tauri release EXE、自包含录音增强组件构建通过。
+- 官方 SenseVoice INT8 下载、SHA256 校验、安装及本机 CPU 推理通过。嵌入式 CPU Python 能导入录音／ASR／API 所需依赖，且找不到 PyTorch；关闭 site 后不再读取系统用户包。
+- 同一组官方测试 WAV 完成 zh / auto / en / yue 两套实测（SenseVoice CPU、Qwen 0.6B CUDA），两套文件转录均完成；不是逐字准确率评测，不以非空文本证明高准确率。
+- SenseVoice：5.1–7.2 秒音频，预热后 0.086–0.140 秒，进程 RSS 约 354–361 MiB；Qwen CUDA：预热后约 0.598–0.790 秒，RSS 约 2.24–2.27 GiB。这是开发机结果，不能外推最低配置。首次识别和完整服务重启明显更慢。
+- 测试原始结果保存在忽略的 data/portable-validation/cpu.json、cuda.json，复现脚本 scripts/validate_runtime.py。语言固定与自动检测的少量对照不足以承诺提速或提升准确率。
+- 独立代码审查发现并修复了启动路径绕过切换锁、CPU 模式误报 Qwen 兼容、保存时覆盖客户端设置三个问题；相关回归均通过。
 
-## Next Minimal Action
+- 便携内置 CPU 运行时已在中文／空格目录、精简 PATH 下完成打开界面、校验安装 SenseVoice、四种语言实测及文件转录。发现并修复 sherpa 词表中文路径问题；这仍不是干净系统验收。
+- 469×719 与 1200×850 浏览器窗口无横向溢出，模型入口和普通话默认值正确，最终检查无页面异常。基础录音与自包含 Windows 语音增强测试均成功（静音环境不判断识别质量），无需系统 .NET SDK。实际无效模型应用返回错误并恢复 SenseVoice，之后可重新识别。
+- 前端实时列表上限 200，历史查询每次最多 1000 条，历史元数据完整保留；统计缓存避免重复计算。JSON 历史全量写入仍随数量增长，后续可按实测迁移索引存储。
 
-- Use `VoiceType-live-ui.bat` as the daily entry so the browser loads the latest frontend source without rebuilding the EXE. The header should show a visible `v1.0.0+...` build marker next to `VoiceType`.
-- Use the main app Settings page to leave `Windows 语音增强采集` enabled, then do a real Caps Lock recording and inspect the newest archive `result.json` for `capture_backend=windows_mediacapture`.
-- For the next new-window task, start from `PROJECT_STATUS.md`, then read `RUNBOOK.md` only if commands or validation details are needed.
-- Do not use `VoiceType-1.0.0-portable-build7.exe` to validate fresh frontend changes; it contains bundled UI assets from the time it was packaged.
-- For copy-paste-safe manual startup from PowerShell:
-  `Set-Location -LiteralPath "C:\Users\13678\Documents\.Projects\voice-type"` then run `.\VoiceType-live-ui.bat`.
+- 单逻辑 CPU 亲和性、单推理线程的模拟中，SenseVoice 5.592 秒样本预热后为 0.143–0.149 秒，RSS 350 MiB；仍是高性能开发机的受限测试。
+- 本地 CPU ZIP 约 203 MB（含 FFmpeg、自包含录音增强和 25 个锁定依赖），可选 CUDA 组件约 3.01 GB（99 个依赖），提供分卷。组件体积来自运行依赖，未计入模型权重。
 
-## Last Updated
+- Qwen → SenseVoice 文件任务完成后已实际恢复 Qwen；本机 GPU 推理分配约 1510 MiB、保留 1836 MiB、峰值分配 1794 MiB（PyTorch 进程指标，不是整机显存占用）。浏览器停止／重新启动后恢复录音状态，最终检查无新页面异常或 HTTP 5xx。
 
-- 2026-05-04
+## 发布前剩余验收
+
+1. Windows 10／11 干净环境，从中文和空格路径验证独立启动、下载、快捷键录音到目标应用输入、停止再启动、增强录音不可用时回退、WebView2 缺失引导。
+2. 真正无 CUDA／无 PyTorch 机器及低配实机。开发机隔离运行时和受限线程测试只能补充证据，不能替代实机。
+3. 实际显存不足、驱动不兼容恢复；当前有故障模拟回归，不能称已覆盖所有驱动。
+4. Paraformer 和 Qwen 1.7B 本轮未做完整运行验收；日语、韩语尚未逐项实测。
+5. 整理 FFmpeg 对应源码和全部第三方再分发材料；当前只有本机构建包，不满足公开二进制发布条件。项目源码许可证由维护者选择。
+6. 本轮没有重新验证真实 F1 按键到其他应用粘贴、托盘退出和干净系统的桌面 WebView。旧版录音验证不替代新便携包验收。
+
+## 下一步
+
+按 RUNBOOK 的发布验收顺序完成剩余项目，再创建 GitHub 预发行。不得把构建成功标为干净环境验收通过。

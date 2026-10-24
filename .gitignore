@@ -40,6 +40,14 @@ models/
 tools/ffmpeg/
 tools/windows_voice_capture/bin/
 tools/windows_voice_capture/obj/
+tools/windows_voice_capture/publish/
+runtime/
+runtime-cuda/
+data/activity/
+data/runtime_capture/
+data/portable-validation/
+data/components/
+dist/build-cache/
 *.onnx
 *.gguf
 *.safetensors
@@ -60,3 +68,6 @@ voicetype-validation.png
 .env.*
 *.key
 *.pem
+
+# Temporary ASCII vocabulary for Windows ONNX path compatibility
+voicetype_tokens_*.txt

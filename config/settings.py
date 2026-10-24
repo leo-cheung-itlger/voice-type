@@ -2,6 +2,10 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from typing import Any, Dict, Literal
 import json
 import os
+import threading
+import tempfile
+from functools import wraps
+from common.model_catalog import CATALOG, LANGUAGES, validate_model
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_ASR_PORT = 55341
@@ -9,12 +13,22 @@ DEFAULT_API_PORT = 55342
 DEFAULT_FRONTEND_PORT = 55343
 LEGACY_ASR_PORT = 52341
 LEGACY_API_PORT = 52342
-DEFAULT_MODELS_DIR = os.path.join(os.path.dirname(BASE_DIR), "models")
+PORTABLE = os.path.isfile(os.path.join(BASE_DIR, "portable.json"))
+DEFAULT_MODELS_DIR = os.path.join(BASE_DIR if PORTABLE else os.path.dirname(BASE_DIR), "models")
 LEGACY_MODELS_DIR = r"C:\Program Files\CapsWriter-Offline-Windows-64bit\models"
 MODELS_DIR = os.environ.get("VOICETYPE_MODELS_DIR", DEFAULT_MODELS_DIR)
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+DATA_DIR = os.environ.get("VOICETYPE_DATA_DIR", os.path.join(BASE_DIR, "data"))
 LOGS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
 APP_CONFIG_FILE = os.path.join(DATA_DIR, "app_config.json")
+_CONFIG_LOCK = threading.RLock()
+
+
+def _synchronized(function):
+    @wraps(function)
+    def call(*args, **kwargs):
+        with _CONFIG_LOCK:
+            return function(*args, **kwargs)
+    return call
 
 MODEL_DIR_NAMES = {
     "qwen3-asr-0.6b": "Qwen3-ASR-0.6B",
@@ -32,7 +46,7 @@ def model_root_candidates() -> list:
         os.environ.get("VOICETYPE_MODELS_DIR", ""),
         DEFAULT_MODELS_DIR,
         os.path.join(BASE_DIR, "models"),
-        LEGACY_MODELS_DIR,
+        "" if PORTABLE else LEGACY_MODELS_DIR,
     ):
         if root and root not in roots:
             roots.append(root)
@@ -40,6 +54,13 @@ def model_root_candidates() -> list:
 
 
 def resolve_model_dir(model: str) -> str:
+    try:
+        with open(os.path.join(DATA_DIR, "model_locations.json"), encoding="utf-8") as handle:
+            imported = json.load(handle).get(model, "")
+        if imported and os.path.isdir(imported):
+            return imported
+    except (OSError, ValueError):
+        pass
     dirname = MODEL_DIR_NAMES.get(model, "")
     if not dirname:
         return ""
@@ -54,19 +75,32 @@ def resolve_model_dir(model: str) -> str:
 
 @dataclass
 class ServerConfig:
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = DEFAULT_ASR_PORT
-    model: Literal["qwen3-asr-0.6b", "qwen3-asr-1.7b", "qwen3-asr-1.7b-gguf-vulkan", "funasr-nano", "sensevoice", "paraformer"] = "qwen3-asr-1.7b"
+    model: str = "sensevoice"
     model_dir: str = ""
+    compute_mode: Literal["auto", "cpu", "cuda"] = "auto"
+    language: str = "zh"
+    cpu_threads: int = 4
     gpu: bool = True
-    gpu_required: bool = True
-    allow_cpu_fallback: bool = False
+    gpu_required: bool = False
+    allow_cpu_fallback: bool = True
     gpu_backend: Literal["vulkan", "dml", "cuda"] = "cuda"
     max_connections: int = 10
     ping_interval: int = 20
     ping_timeout: int = 10
 
     def __post_init__(self):
+        # This desktop application exposes local process/file controls without network authentication.
+        self.host = "127.0.0.1"
+        if self.compute_mode not in ("auto", "cpu", "cuda"):
+            raise ValueError("运行方式必须是 auto、cpu 或 cuda")
+        if self.language not in LANGUAGES:
+            raise ValueError("不支持的识别语言")
+        self.cpu_threads = max(1, min(16, int(self.cpu_threads)))
+        self.gpu = self.compute_mode != "cpu" and CATALOG.get(self.model, {}).get("backend") == "qwen-asr"
+        self.gpu_required = self.compute_mode == "cuda"
+        self.allow_cpu_fallback = self.compute_mode == "auto"
         if not self.model_dir or not os.path.isdir(self.model_dir):
             self.model_dir = resolve_model_dir(self.model)
 
@@ -133,6 +167,9 @@ def _known_fields(cls) -> set:
 def _merge_dataclass(instance: Any, values: Dict[str, Any]):
     if not isinstance(values, dict):
         return instance
+    if isinstance(instance, ServerConfig) and "compute_mode" not in values and any(key in values for key in ("gpu", "gpu_required", "allow_cpu_fallback")):
+        values = dict(values)
+        values["compute_mode"] = "cpu" if not values.get("gpu", instance.gpu) else "cuda" if values.get("gpu_required", instance.gpu_required) and not values.get("allow_cpu_fallback", instance.allow_cpu_fallback) else "auto"
     allowed = _known_fields(type(instance))
     for key, value in values.items():
         if key in allowed:
@@ -175,14 +212,28 @@ def _migrate_legacy_ports(config: AppConfig):
         config.api.port = DEFAULT_API_PORT
 
 
+@_synchronized
 def save_app_config(config: AppConfig, filepath: str = APP_CONFIG_FILE):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    with open(filepath, "w", encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(filepath), delete=False, suffix=".tmp") as f:
+        temporary = f.name
         json.dump(app_config_to_dict(config), f, ensure_ascii=False, indent=2)
+    os.replace(temporary, filepath)
 
 
+@_synchronized
+def save_server_config(server: ServerConfig, filepath: str = APP_CONFIG_FILE):
+    config = load_app_config(filepath)
+    config.server = server
+    save_app_config(config, filepath)
+    return config
+
+
+@_synchronized
 def update_app_config(values: Dict[str, Any], filepath: str = APP_CONFIG_FILE) -> AppConfig:
     config = load_app_config(filepath)
+    if values.get("server", {}).get("model", config.server.model) != config.server.model:
+        config.server.model_dir = ""
     _merge_dataclass(config.server, values.get("server", {}))
     _merge_dataclass(config.client, values.get("client", {}))
     _merge_dataclass(config.api, values.get("api", {}))

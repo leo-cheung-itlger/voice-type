@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Root = (Split-Path -Parent $PSScriptRoot),
     [switch]$NoClean
 )
@@ -17,71 +17,20 @@ if (-not (Test-Path $python)) {
 
 New-Item -ItemType Directory -Force -Path $logsPath | Out-Null
 
-function Start-BackgroundCommand {
-    param(
-        [string]$CommandLine,
-        [string]$WorkingDirectory
-    )
-    $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName = "cmd.exe"
-    $psi.Arguments = "/d /s /c `"$CommandLine`""
-    $psi.WorkingDirectory = $WorkingDirectory
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    [System.Diagnostics.Process]::Start($psi) | Out-Null
-}
-
 if (-not $NoClean) {
     & (Join-Path $PSScriptRoot "stop-dev.ps1") -Root $rootPath | Out-Null
     Start-Sleep -Seconds 1
 }
 
-$apiOut = Join-Path $logsPath "api_stdout.log"
-$apiErr = Join-Path $logsPath "api_stderr.log"
-Start-BackgroundCommand `
-    -CommandLine "`"$python`" api\api_server.py > `"$apiOut`" 2> `"$apiErr`"" `
-    -WorkingDirectory $rootPath
-
-$ready = $false
-for ($i = 0; $i -lt 60; $i++) {
-    Start-Sleep -Seconds 1
-    try {
-        Invoke-RestMethod -Uri "$apiUrl/api/status" -TimeoutSec 2 | Out-Null
-        $ready = $true
-        break
-    } catch {
-        $ready = $false
-    }
-}
-
-if (-not $ready) {
-    throw "VoiceType API did not become ready at $apiUrl. See logs\api_stderr.log."
-}
-
+& (Join-Path $PSScriptRoot "start-runtime.ps1") -Root $rootPath
 if (Test-Path (Join-Path $frontendPath "node_modules")) {
-    Start-BackgroundCommand `
-        -CommandLine "npm run dev -- --host 127.0.0.1 --port 55343 > ..\logs\frontend_dev.log 2>&1" `
-        -WorkingDirectory $frontendPath
+    $node = (Get-Command node.exe).Source
+    $vite = Join-Path $frontendPath "node_modules/vite/bin/vite.js"
+    Start-Process -FilePath $node -ArgumentList ('"' + $vite + '" --host 127.0.0.1 --port 55343 --strictPort') -WorkingDirectory $frontendPath -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logsPath "frontend_stdout.log") -RedirectStandardError (Join-Path $logsPath "frontend_stderr.log") | Out-Null
 } else {
-    Write-Warning "frontend\node_modules is missing. Run: cd frontend && npm install"
-}
-
-$startAll = Invoke-RestMethod -Uri "$apiUrl/api/start-all" -Method Post -TimeoutSec 60
-
-$asrReady = $false
-for ($i = 0; $i -lt 300; $i++) {
-    Start-Sleep -Seconds 1
-    $listener = Get-NetTCPConnection -LocalPort 55341 -State Listen -ErrorAction SilentlyContinue
-    if ($listener) {
-        $asrReady = $true
-        break
-    }
-}
-
-if (-not $asrReady) {
-    throw "ASR server did not open port 55341 within 300 seconds. See logs\managed_server_*.log and logs\asr_engine_*.log."
+    Write-Warning "Run npm ci in frontend before starting Live UI."
 }
 
 Write-Host "VoiceType API: $apiUrl"
 Write-Host "VoiceType Web: $webUrl"
-Write-Host "ASR start status: server=$($startAll.server.status) client=$($startAll.client.status)"
+Write-Host "Select/download a model in Settings, then apply recognition settings."

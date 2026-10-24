@@ -1,0 +1,6 @@
+# Install into the separate runtime-cuda component; never into the CPU runtime.
+-r requirements-cpu.txt
+qwen-asr==0.0.6
+torch==2.11.0
+transformers==4.57.6
+accelerate==1.12.0

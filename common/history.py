@@ -4,14 +4,11 @@ import time
 from typing import Any, Dict, List, Optional
 
 from common.logger import setup_logger
+from config.settings import DATA_DIR
 
 logger = setup_logger("history")
 
-HISTORY_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data",
-    "history.json",
-)
+HISTORY_FILE = os.path.join(DATA_DIR, "history.json")
 
 
 class HistoryManager:
@@ -19,6 +16,7 @@ class HistoryManager:
         self._filepath = filepath or HISTORY_FILE
         self._entries: List[Dict[str, Any]] = []
         self._error_marks: List[Dict[str, Any]] = []
+        self._stats_cache = None
         self._load()
 
     def _load(self):
@@ -32,11 +30,12 @@ class HistoryManager:
             logger.error(f"Failed to load history: {e}")
 
     def _save(self):
+        self._stats_cache = None
         try:
             os.makedirs(os.path.dirname(self._filepath), exist_ok=True)
             with open(self._filepath, "w", encoding="utf-8") as f:
                 json.dump(
-                    {"entries": self._entries[-1000:], "error_marks": self._error_marks},
+                    {"entries": self._entries, "error_marks": self._error_marks},
                     f,
                     ensure_ascii=False,
                     indent=2,
@@ -54,6 +53,10 @@ class HistoryManager:
         transcript_path: str = "",
         duration_seconds: Optional[float] = None,
     ):
+        if task_id:
+            existing = next((row for row in self._entries if row.get("task_id") == task_id), None)
+            if existing:
+                return existing
         duration = round(float(duration_seconds if duration_seconds is not None else delay), 3)
         if not transcript_path and audio_path and os.path.basename(audio_path).lower() == "recording.wav":
             transcript_path = os.path.join(os.path.dirname(audio_path), "result.json")
@@ -72,6 +75,8 @@ class HistoryManager:
         return entry
 
     def get_entries(self, limit: int = 100, offset: int = 0) -> List[Dict]:
+        limit = max(1, min(1000, limit))
+        offset = max(0, offset)
         return self._entries[-(offset + limit) : -offset] if offset else self._entries[-limit:]
 
     def clear_entries(self):
@@ -101,7 +106,8 @@ class HistoryManager:
 
     def get_stats(self) -> Dict[str, Any]:
         from collections import Counter
-
+        if self._stats_cache is not None:
+            return self._stats_cache
         word_counter = Counter()
         for entry in self._entries:
             text = entry.get("text", "")
@@ -109,9 +115,10 @@ class HistoryManager:
                 for length in range(2, min(6, len(text) - i + 1)):
                     word_counter[text[i : i + length]] += 1
 
-        return {
+        self._stats_cache = {
             "total_entries": len(self._entries),
             "top_words": [
                 {"word": w, "count": c} for w, c in word_counter.most_common(50)
             ],
         }
+        return self._stats_cache

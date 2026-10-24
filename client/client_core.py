@@ -14,6 +14,7 @@ import websockets
 from common.hotword import HotwordManager
 from common.audio_levels import quality_message
 from common.logger import setup_logger
+from common.activity import acquire, release
 from config.settings import APP_CONFIG_FILE, ClientConfig, load_app_config
 from client.notifier import RecordingNotifier
 from client.output import type_result
@@ -371,6 +372,11 @@ class VoiceClient:
         if self._recording:
             return
 
+        try:
+            self._recording_lease = acquire("recording")
+        except RuntimeError:
+            self._notifier.output_failed("正在切换识别设置，请稍后录音")
+            return
         self._reload_config_if_needed(force=True)
         self._recording = True
         logger.info("Key pressed, starting recording")
@@ -378,6 +384,8 @@ class VoiceClient:
         recorder_started_at = time.monotonic()
         if not self._recorder.start():
             self._recording = False
+            release(self._recording_lease)
+            self._recording_lease = None
             return
         self._key_down_at = time.monotonic()
         logger.info("Recorder start latency: %.3fs", time.monotonic() - recorder_started_at)
@@ -392,6 +400,15 @@ class VoiceClient:
             await asyncio.sleep(0 if data else 0.05)
 
     async def _on_key_up(self):
+        try:
+            await self._finish_recording()
+        finally:
+            token = getattr(self, "_recording_lease", None)
+            if token:
+                release(token)
+                self._recording_lease = None
+
+    async def _finish_recording(self):
         if not self._recording:
             return
 
@@ -487,6 +504,7 @@ class VoiceClient:
             self._notifier.queued(queued_count + 1)
 
         await self._send_queue.put({
+            "activity_token": self._recording_lease,
             "task_id": task_id,
             "audio_data": audio_data,
             "audio_path": audio_path,
@@ -516,6 +534,7 @@ class VoiceClient:
             "recorded_duration_seconds": capture.get("recorded_duration_seconds", 0),
             "capture_realtime_ratio": capture.get("capture_realtime_ratio", 0),
         })
+        self._recording_lease = None
 
     def _archive_dir(self, task_id: str) -> str:
         now = time.localtime()
@@ -559,6 +578,8 @@ class VoiceClient:
                 logger.error(f"Recognition request failed: {e}")
                 self._notifier.output_failed("识别失败")
             finally:
+                if item.get("activity_token"):
+                    release(item["activity_token"])
                 if ticker:
                     ticker.cancel()
                 self._processing = False
@@ -585,6 +606,7 @@ class VoiceClient:
                 "audio_path": item.get("audio_path", ""),
                 "transcript_path": transcript_path,
                 "model": result.get("model", ""),
+                "language": result.get("language"),
                 "output_mode": self._config.output_mode,
                 "sample_rate": item.get("sample_rate", self._config.sample_rate),
                 "audio_level": item.get("audio_level", {}),

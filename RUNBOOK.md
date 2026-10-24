@@ -15,14 +15,14 @@ Install Python dependencies:
 
 ```bat
 python -m venv venv
-venv\Scripts\python.exe -m pip install -r requirements.txt
+venv\Scripts\python.exe -m pip install --require-hashes -r requirements-cpu.lock
 ```
 
 Install frontend dependencies:
 
 ```bat
 cd frontend
-npm install
+npm ci
 ```
 
 Start all desktop services:
@@ -31,7 +31,7 @@ Start all desktop services:
 start.bat
 ```
 
-This first cleans project-owned duplicate processes, then launches API, frontend dev server, ASR server, and the recording client in hidden background processes. Frontend dev output is written to `logs/frontend_dev.log`; API stdout/stderr are written to `logs/api_stdout.log` and `logs/api_stderr.log`; managed ASR/client logs are written under `logs/managed_*`.
+This cleans only project-owned processes, then starts API and the frontend in hidden background processes. Select/download a model in Settings and apply it to start ASR and the recording client. Opening the UI never requires a loaded model. Frontend dev output is written to `logs/frontend_dev.log`; API stdout/stderr are written to `logs/api_stdout.log` and `logs/api_stderr.log`; managed ASR/client logs are written under `logs/managed_*`.
 
 Start the latest source UI without rebuilding the EXE:
 
@@ -39,7 +39,7 @@ Start the latest source UI without rebuilding the EXE:
 VoiceType-live-ui.bat
 ```
 
-This is the default daily development/testing entry. It starts the Python runtime, starts Vite on `http://127.0.0.1:55343`, opens the browser, and shows `live-ui` plus a `v1.0.0+<git>` build marker in the app header/settings. Use this to validate frontend changes. The portable EXE contains bundled UI assets and should only be used when validating a packaged release.
+This is the default daily development/testing entry. It starts the Python runtime, starts Vite on `http://127.0.0.1:55343`, opens the browser, and shows a short version plus a clickable model in the header. Build identity and PID are under advanced diagnostics. Use this to validate frontend changes. The portable EXE contains bundled UI assets and should only be used when validating a packaged release.
 
 If the runtime restart button is needed, it should return control to the UI instead of spinning indefinitely. Live UI restarts ASR/client through the API; the Tauri shell starts the stop/start sequence in the background and the frontend polls readiness with a visible timeout.
 
@@ -50,6 +50,16 @@ venv\Scripts\python.exe scripts\validate_audio_regression.py
 ```
 
 This converts the reference `.weba` file to `48k mono`, plays it through the current speaker output, records from the requested microphones, runs the recorded WAV back through the local `qwen3-asr-1.7b`, and writes validation WAVs under `data\transcription_validation\audio_regression\`. Use the `3.5mm` microphone for speaker-facing playback validation; the laptop array microphone should be validated in its real physical position, not forced to share the same speaker geometry. Caps Lock validation should report the active `capture_backend`, the remembered `normalized_strategy`/channel preference for PyAudio fallback cases, and, when Windows voice capture is disabled, default-on `auto_gain_enabled=true` should apply post-capture gain only when effective signal is present.
+
+Probe ASR WebSocket latency with the latest archived recording:
+
+```bat
+venv\Scripts\python.exe scripts\asr_latency_probe.py --mode batch
+venv\Scripts\python.exe scripts\asr_latency_probe.py --mode chunked --chunk-ms 50
+venv\Scripts\python.exe scripts\asr_latency_probe.py --mode realtime --chunk-ms 50
+```
+
+`batch` sends the whole WAV in one WebSocket message, `chunked` sends 50ms-style chunks without waiting between chunks, and `realtime` sleeps between chunks to simulate recording-time streaming. The current ASR server still starts recognition on `audio_end`; this probe measures transport and post-end wait, and is the acceptance tool for any future true streaming client/server change.
 
 Stop desktop services:
 
@@ -76,68 +86,19 @@ Start the current Web control console manually:
 start.bat
 ```
 
-Then open `http://127.0.0.1:55343/#/`. ASR server and client are started by `start.bat`; the control tab can still restart them.
+Then open `http://127.0.0.1:55343/#/`. Use Settings → 应用并重启识别, then Control → 启动. Model and language changes are transactional and cannot interrupt an active recording/task.
 
 Start the desktop shell, after installing Tauri dependencies:
 
 ```bat
 cd frontend
-npm install
+npm ci
 npm run desktop:dev
 ```
 
 The Tauri development shell opens a 480x720 desktop window, starts the Python runtime through `scripts\start-runtime.ps1`, hides to tray when the window close button is clicked, and fully exits through the tray Quit menu.
 
-Current packaged-release entry:
-
-```text
-dist\releases\VoiceType-1.0.0\VoiceType-1.0.0-portable.exe
-```
-
-Do not use this packaged EXE to verify fresh frontend source changes unless it has just been rebuilt. Do not open EXE files from `target\release\deps`, `target\release\build`, or `target-codex-build*\deps`; those are internal build artifacts. Repeat-launching the portable EXE should focus the existing window rather than start another runtime.
-
-Windows Tauri builds require the Microsoft MSVC linker. If `npm run desktop:build` fails with `link.exe not found`, install Visual Studio 2022 Build Tools with the C++ desktop workload, then open a new terminal and rerun the build. Check the linker with:
-
-```bat
-where link
-```
-
-If `where link` only works after loading Visual Studio's developer environment, run desktop commands through `VsDevCmd.bat`:
-
-```bat
-cmd /c "\"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat\" -arch=x64 && cd /d C:\Users\13678\Documents\.Projects\voice-type\frontend && npm run desktop:build"
-```
-
-Build a desktop package, after the desktop shell has passed validation:
-
-```bat
-cd frontend
-npm run desktop:build
-```
-
-Current Windows build outputs:
-
-- `frontend\src-tauri\target\release\voicetype.exe`
-- `frontend\src-tauri\target\release\bundle\msi\VoiceType_1.0.0_x64_en-US.msi`
-- `frontend\src-tauri\target\release\bundle\nsis\VoiceType_1.0.0_x64-setup.exe`
-- `dist\releases\VoiceType-1.0.0\VoiceType-1.0.0-portable.exe`
-
-Do not treat the first package as a final installer. The first target should be a portable alpha package used from this project tree, with external models and the existing `venv`. A formal installer should come after runtime lifecycle, model selection, and update behavior are stable.
-
-If `npm run desktop:build` fails because `frontend\src-tauri\target\release\voicetype.exe` is locked, close all running VoiceType windows and tray instances. If another process such as Everything still holds the executable, build into a temporary target directory:
-
-```bat
-set CARGO_TARGET_DIR=C:\Users\13678\Documents\.Projects\voice-type\frontend\src-tauri\target-codex-build
-cmd /c "\"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat\" -arch=x64 && cd /d C:\Users\13678\Documents\.Projects\voice-type\frontend && npm run desktop:build"
-```
-
-The temporary EXE is written to `frontend\src-tauri\target-codex-build\release\voicetype.exe`. Additional temporary targets matching `frontend\src-tauri\target-codex-build*` are ignored by Git.
-
-Create the current portable release from a successful Tauri release build:
-
-```bat
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\create-portable-release.ps1 -Root C:\Users\13678\Documents\.Projects\voice-type -Version 1.0.0 -TargetRelease C:\Users\13678\Documents\.Projects\voice-type\frontend\src-tauri\target-codex-build4\release
-```
+便携构建流程见下方唯一的 Desktop Packaging 章节。开发 UI 使用 VoiceType-live-ui.bat；发布验收使用刚构建的完整目录，不能单独复制 EXE 或从 Rust 的 deps/build 目录启动。
 
 ## Validation Order
 
@@ -408,29 +369,49 @@ File transcription validation:
 
 ## Desktop Packaging
 
-Current desktop direction:
+构建机需要 Python 3.12 x64、Node/npm、Rust、MSVC C++ Build Tools 和 .NET SDK。最终用户不需要这些开发工具。
 
-1. Tauri dev shell: real desktop window over the existing Vue frontend.
-2. Portable Windows alpha: a zip/folder build that can be opened and deleted without installing system entries.
-3. Windows installer: only after the Python runtime, model paths, tray lifecycle, logs, and updater strategy are stable.
-4. macOS build: build on macOS or a macOS CI runner; do not expect reliable Windows-to-macOS cross-compilation.
+```powershell
+cd frontend
+npm ci
+npm run desktop:build -- --no-bundle
+cd ..
+.\scripts\create-portable-release.ps1 -Version 1.0.0-alpha.1 -TargetRelease frontend\src-tauri\target\release -WithCuda
+```
 
-Desktop validation:
+如使用 CARGO_TARGET_DIR，传入相应 release 目录。找不到 MSVC linker 时，在 Visual Studio Developer PowerShell 中执行构建。构建会发布自包含 Windows 录音增强组件，再打包官方 CPython 3.12.10 与 hash-locked 依赖。默认从 wheel 安装；`-UseInstalled` 可复制已安装且版本、RECORD 哈希匹配的锁定依赖，用于复现本机测试环境。
 
-1. `cd frontend && npm run build`
-2. `cd frontend && npm run desktop:dev`
-3. Confirm the window opens at about 480x720.
-4. Confirm `/api/status` returns managed server/client.
-5. Click the window close button and confirm it hides instead of killing runtime.
-6. Restore from tray.
-7. Use tray Quit and confirm `55341/55342/55343` are no longer listening.
+产物为 dist/releases/VoiceType-<version>-windows-x64.zip、可选 CUDA ZIP／分卷及 VoiceType-<version>-components.json。CPU ZIP 不含模型和 PyTorch。下载运行组件只允许与 portable.json 对应的 GitHub tag；尚无该预发行时下载会明确失败。上传时同时提供 manifest 和 CUDA ZIP（或全部分卷），遵守单文件大小限制。
+
+打包前在 tools/ffmpeg/ 提供该二进制的 LICENSE.txt、SOURCE.txt，并完成第三方再分发材料；只有网址不足以替代适用许可证要求的对应源码。项目源码许可尚需维护者选择，参考 THIRD_PARTY.md。
+
+发布验收顺序：
+
+1. 解压到新的中文、空格目录；无系统 Python、无 PyTorch、无开发目录的 Windows 10/11 环境打开界面，确认不加载模型也可进入设置。
+2. 点击下载 SenseVoice（约 163 MB），检查路径、进度、重试、导入、校验错误；应用 CPU + 普通话，测试 F1（或用户设置的键）录音到目标应用输入。
+3. 普通话／自动／英语／粤语使用相同样本对照；测试不支持组合、录音期间切换、加载失败恢复、停止再启动。
+4. 文件转录保存语言快照，复用相同服务；换模型任务暂停输入，结束后恢复。检查 TXT/JSON/SRT。
+5. NVIDIA 机器安装可选组件和 Qwen 0.6B，实测正常、显存不足、驱动不兼容；自动模式提供 CPU 恢复，严格 GPU 明确失败。
+6. 记录模型冷加载、首次／预热识别、进程内存和 CUDA 分配；低配实机单独报告。
+7. 469×719 和桌面窗口检查模型入口、中文状态、错误恢复、控制台；测试托盘隐藏、恢复、退出和重复启动。
+8. WebView2 缺失时按 README 的 Microsoft 官方链接安装；增强录音不可用时确认基础录音回退。确认数据均在便携目录。
+9. 完成第三方材料和全部必需验收后才创建 GitHub 预发行。未验证项目留在 PROJECT_STATUS.md，不能用构建通过替代。
+
+运行回归：
+
+```powershell
+.\venv\Scripts\python.exe -m unittest discover -s tests -v
+.\venv\Scripts\python.exe scripts\validate_runtime.py --fixtures <含zh.wav/en.wav/yue.wav目录> --model sensevoice --mode cpu --output data/portable-validation/cpu.json
+```
+
+硬件／语言／便携策略的当前验证状态只在 PROJECT_STATUS.md 维护。
 
 ## Failure Notes
 
 - In PowerShell, `npm` may fail if script execution policy blocks `npm.ps1`; use `cmd /c npm run build` or a normal Command Prompt.
 - In the Codex sandbox, Vite/esbuild may fail with `spawn EPERM`; rerun the build in a normal local terminal.
 - Qwen3-ASR initialization is configured for offline local model paths under the parent-level `models/` directory.
-- If CUDA is unavailable and `gpu_required=true`, Qwen3-ASR must fail startup instead of falling back to CPU. Only set `allow_cpu_fallback=true` for explicit CPU debugging.
+- Use compute_mode auto/cpu/cuda instead of editing the legacy GPU flags. Strict cuda fails explicitly; auto may recover to installed SenseVoice with a visible reason. Model/language changes must use /api/models/apply.
 - PyTorch CUDA verification:
 
 ```bat

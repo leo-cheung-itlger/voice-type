@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 
 from common.logger import setup_logger
 from config.settings import BASE_DIR, DATA_DIR, resolve_model_dir
-from server.asr_engine import ASREngine
+from common.remote_asr import RemoteASREngine
 
 logger = setup_logger("transcription")
 
@@ -318,6 +318,8 @@ class TranscriptionManager:
             "input_files": files,
             "files": file_rows,
             "model": model,
+            "language": payload.get("language", "auto"),
+            "compute_mode": payload.get("compute_mode", "auto"),
             "output_dir": payload.get("output_dir") or "",
             "formats": formats,
             "polish": bool(payload.get("polish", False)),
@@ -384,11 +386,11 @@ class TranscriptionManager:
         with self._lock:
             return bool(self._tasks.get(task_id, {}).get("cancel_requested"))
 
-    def run_task(self, task_id: str, default_model: str, default_model_dir: str, gpu: bool, gpu_backend: str):
+    def run_task(self, task_id: str, engine: RemoteASREngine):
         with self._run_lock:
-            self._run_task_locked(task_id, default_model, default_model_dir, gpu, gpu_backend)
+            self._run_task_locked(task_id, engine)
 
-    def _run_task_locked(self, task_id: str, default_model: str, default_model_dir: str, gpu: bool, gpu_backend: str):
+    def _run_task_locked(self, task_id: str, engine: RemoteASREngine):
         task = self.get_task(task_id)
         if not task:
             return
@@ -397,13 +399,7 @@ class TranscriptionManager:
             self._update(task_id, status="failed", error="ffmpeg not found")
             return
 
-        model = task.get("model") or default_model
-        model_dir = resolve_model_dir(model) or default_model_dir
-        self._update(task_id, status="transcribing", model=model, progress=1)
-        engine = ASREngine(model=model, model_dir=model_dir, gpu=gpu, gpu_backend=gpu_backend)
-        if not engine.initialize():
-            self._update(task_id, status="failed", error=f"Failed to initialize model: {model}")
-            return
+        self._update(task_id, status="transcribing", active_model=engine.model_name, effective_language=engine.language, progress=1)
 
         try:
             files = task.get("files", [])
@@ -412,6 +408,9 @@ class TranscriptionManager:
                     self._update(task_id, status="cancelled")
                     return
                 self._process_file(task_id, index, row, engine, ffmpeg)
+                if self._cancelled(task_id):
+                    self._update(task_id, status="cancelled")
+                    return
                 completed = sum(1 for item in self.get_task(task_id).get("files", []) if item.get("status") in {"completed", "failed"})
                 self._update(task_id, progress=int((completed / max(1, len(files))) * 100))
 
@@ -422,7 +421,7 @@ class TranscriptionManager:
             logger.exception(f"Transcription task failed: {task_id}")
             self._update(task_id, status="failed", error=str(exc))
 
-    def _process_file(self, task_id: str, index: int, row: Dict[str, Any], engine: ASREngine, ffmpeg: str):
+    def _process_file(self, task_id: str, index: int, row: Dict[str, Any], engine: RemoteASREngine, ffmpeg: str):
         source = row.get("path", "")
         source_path = Path(source)
         if row.get("error"):
@@ -454,32 +453,42 @@ class TranscriptionManager:
             str(sample_rate),
             "pipe:1",
         ]
-        decoded = subprocess.check_output(command, cwd=BASE_DIR)
         segments = []
-        total_chunks = max(1, (len(decoded) + chunk_bytes - 1) // chunk_bytes)
-        for chunk_index, offset in enumerate(range(0, len(decoded), chunk_bytes)):
-            if self._cancelled(task_id):
-                self._update_file(task_id, index, status="cancelled")
-                return
-            chunk = decoded[offset : offset + chunk_bytes]
-            if not chunk:
-                continue
-            started = offset / 2 / sample_rate
-            ended = min(len(decoded) / 2 / sample_rate, started + chunk_seconds)
-            text = engine.recognize(chunk, sample_rate=sample_rate) or ""
-            segments.append({
-                "index": chunk_index + 1,
-                "start": round(started, 3),
-                "end": round(ended, 3),
-                "text": text,
-            })
-            file_progress = int(((chunk_index + 1) / total_chunks) * 100)
-            self._update_file(task_id, index, progress=file_progress)
+        offset = 0
+        # stderr is file-backed to avoid a full pipe deadlock on malformed input.
+        import tempfile
+        with tempfile.TemporaryFile() as errors:
+            process = subprocess.Popen(command, cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=errors,
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            try:
+                while True:
+                    if self._cancelled(task_id):
+                        self._update_file(task_id, index, status="cancelled")
+                        return
+                    chunk = process.stdout.read(chunk_bytes)
+                    if not chunk:
+                        break
+                    started = offset / 2 / sample_rate
+                    offset += len(chunk)
+                    text = engine.recognize(chunk, sample_rate=sample_rate) or ""
+                    segments.append({"index": len(segments) + 1, "start": round(started, 3),
+                                     "end": round(offset / 2 / sample_rate, 3), "text": text})
+                    self._update_file(task_id, index, processed_seconds=round(offset / 2 / sample_rate, 1))
+                if process.wait(timeout=30) != 0:
+                    errors.seek(0)
+                    raise RuntimeError(errors.read(8192).decode("utf-8", "replace"))
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=10)
+                process.stdout.close()
 
         result = {
             "source_file": str(source_path),
             "model": engine.model_name,
             "backend": engine.backend,
+            "language": engine.language,
+            "requested_language": task.get("language"),
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "approximate_timestamps": True,
             "sample_rate": sample_rate,

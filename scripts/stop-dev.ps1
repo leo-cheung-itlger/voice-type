@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Root = (Split-Path -Parent $PSScriptRoot)
 )
 
@@ -19,8 +19,7 @@ function Test-VoiceTypeProcess {
     if (-not $CommandLine) { return $false }
     if ($Name -eq "python.exe" -and
         $CommandLine.IndexOf("api_server.py", [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
-        ($CommandLine.IndexOf($rootPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-         $CommandLine.IndexOf("api\api_server.py", [System.StringComparison]::OrdinalIgnoreCase) -ge 0)) {
+        ($CommandLine.IndexOf($rootPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)) {
         return $true
     }
     if ($CommandLine.IndexOf($rootPath, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
@@ -36,17 +35,6 @@ function Test-VoiceTypeProcess {
     }
     return $false
 }
-
-foreach ($port in @(55341, 55342, 55343)) {
-    Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
-        ForEach-Object {
-            if ($_.OwningProcess -ne $currentPid) {
-                Stop-Process -Id $_.OwningProcess -Force
-            }
-        }
-}
-
-Start-Sleep -Milliseconds 300
 
 Get-CimInstance Win32_Process |
     Where-Object {

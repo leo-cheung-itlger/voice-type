@@ -26,6 +26,9 @@ export interface AppConfig {
     port: number
     model: string
     model_dir: string
+    compute_mode: 'auto' | 'cpu' | 'cuda'
+    language: string
+    cpu_threads: number
     gpu: boolean
     gpu_required: boolean
     allow_cpu_fallback: boolean
@@ -64,6 +67,13 @@ export interface ModelEntry {
   name: string
   path: string
   exists: boolean
+  implemented: boolean
+  compatible: boolean
+  active: boolean
+  loaded: boolean
+  languages: string[]
+  language_hint: boolean
+  download_bytes: number
   backend?: string
   role?: string
   acceleration?: string
@@ -95,6 +105,8 @@ export interface ModelBenchmark {
 
 export interface ModelDownloadJob {
   model: string
+  downloaded_bytes?: number
+  total_bytes?: number
   modelscope_id?: string
   status: 'idle' | 'running' | 'done' | 'error' | 'installed'
   target_dir?: string
@@ -113,6 +125,7 @@ export interface HardwareInfo {
   gpus: { name: string; memory_total_mb?: number; driver_version?: string }[]
   torch: {
     available: boolean
+    qwen_available?: boolean
     version: string
     cuda_available: boolean
     cuda_version: string | null
@@ -356,13 +369,16 @@ const WS_RECOGNITION_URL = (() => {
 
 const defaultConfig: AppConfig = {
   server: {
-    host: '0.0.0.0',
+    host: '127.0.0.1',
     port: 55341,
-    model: 'qwen3-asr-1.7b',
+    model: 'sensevoice',
+    compute_mode: 'auto',
+    language: 'zh',
+    cpu_threads: 4,
     model_dir: '',
     gpu: true,
-    gpu_required: true,
-    allow_cpu_fallback: false,
+    gpu_required: false,
+    allow_cpu_fallback: true,
     gpu_backend: 'cuda',
   },
   client: {
@@ -410,6 +426,19 @@ export const useAppStore = defineStore('app', () => {
   const wsConnected = ref(false)
   const currentPartial = ref('')
   const topWords = ref<{ word: string; count: number }[]>([])
+  const cudaComponent = ref<{status: string; message?: string; error?: string; portable?: boolean; downloaded_bytes?: number; total_bytes?: number}>({status:'idle'})
+  async function fetchCudaComponent() {
+    const data = await apiFetch<typeof cudaComponent.value>('/components/cuda')
+    if (data) cudaComponent.value = data
+  }
+  async function installCudaComponent() {
+    const data = await apiFetch<typeof cudaComponent.value>('/components/cuda', {method:'POST'})
+    if (data) cudaComponent.value = data
+  }
+  const apiReady = ref(false)
+  const applyingRecognition = ref(false)
+  const runtime = ref<{ loaded?: boolean; active_model?: string; active_language?: string; actual_device?: string; fallback_reason?: string }>({})
+  const busy = ref(false)
   const config = ref<AppConfig>(structuredClone(defaultConfig))
   const models = ref<ModelEntry[]>([])
   const modelDownloads = ref<Record<string, ModelDownloadJob>>({})
@@ -455,111 +484,30 @@ export const useAppStore = defineStore('app', () => {
     return (sum / history.value.length).toFixed(2)
   })
   const serviceLabel = computed(() => {
-    if (serverRunning.value && clientRunning.value) return 'Ready'
-    if (serverRunning.value || clientRunning.value) return 'Partial'
-    return 'Stopped'
+    if (serverConflict.value || clientConflict.value) return '服务冲突'
+    if (serverRunning.value && clientRunning.value) return wsConnected.value ? '可以录音' : '结果连接断开'
+    if (serverRunning.value) return '录音未启动'
+    if (clientRunning.value) return '识别未启动'
+    return '未启动'
   })
   const selectedModel = computed(() => models.value.find((model) => model.id === config.value.server.model) || null)
-  function bestBenchmarkForModel(model: ModelEntry, gpuOnly = false) {
-    const candidates = [
-      model.benchmark,
-      benchmarks.value[model.id],
-      ...Object.values(model.benchmarks || {}),
-    ].filter(Boolean) as ModelBenchmark[]
-    const successful = candidates
-      .filter((bench) => bench.ok && Number(bench.recognition_seconds || bench.inference_seconds || 0) > 0)
-      .filter((bench) => !gpuOnly || bench.actual_gpu)
-      .sort((a, b) => Number(a.recognition_seconds || a.inference_seconds || 0) - Number(b.recognition_seconds || b.inference_seconds || 0))
-    if (successful.length) return successful[0]
-    const relevantFailures = candidates
-      .filter((bench) => !gpuOnly || bench.actual_gpu || /cuda|vulkan|dml/.test(bench.acceleration || ''))
-      .sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0))
-    return relevantFailures[0] || null
-  }
   const accelerationState = computed<AccelerationState>(() => {
-    if (!hardware.value) {
-      return {
-        label: '检测中',
-        detail: '正在检测 GPU/CUDA 状态',
-        active: false,
-        backend: config.value.server.gpu ? config.value.server.gpu_backend : 'cpu',
-        cudaReady: false,
-        vulkanSelected: false,
-        blocks: [],
-      }
-    }
-    const torch = hardware.value?.torch
-    const backend = config.value.server.gpu ? config.value.server.gpu_backend : 'cpu'
-    const selected = selectedModel.value
-    const isQwen = (selected?.backend || selected?.id || '').toLowerCase().includes('qwen')
-    const blocks: string[] = []
-
-    if (!config.value.server.gpu) {
-      blocks.push('设置中已关闭 GPU 加速。')
-    } else if (config.value.server.gpu_backend === 'cuda') {
-      if (!torch?.available) blocks.push(torch?.error || 'PyTorch 不可用。')
-      else if (!torch.cuda_available) blocks.push('当前 PyTorch 未启用 CUDA。')
-    } else if (config.value.server.gpu_backend === 'vulkan' && isQwen) {
-      blocks.push('Qwen safetensors 走 PyTorch；Vulkan 仅适用于 sherpa-onnx 类后端。')
-    } else if (config.value.server.gpu_backend === 'dml' && isQwen) {
-      blocks.push('当前 Qwen safetensors 后端不使用 DirectML。')
-    }
-
-    const cudaReady = Boolean(config.value.server.gpu && config.value.server.gpu_backend === 'cuda' && torch?.cuda_available)
-    const vulkanSelected = Boolean(config.value.server.gpu && config.value.server.gpu_backend === 'vulkan')
-    const active = Boolean(config.value.server.gpu && (blocks.length === 0 || cudaReady))
-    const label = !config.value.server.gpu
-      ? 'CPU'
-      : cudaReady
-        ? 'CUDA'
-        : vulkanSelected && blocks.length === 0
-          ? 'Vulkan'
-          : 'CPU fallback'
-    const detail = blocks.length
-      ? blocks[0]
-      : active
-        ? `${config.value.server.gpu_backend.toUpperCase()} 已用于 ${selected?.name || config.value.server.model}`
-        : '已选择 CPU 推理'
-
-    return {
-      label,
-      detail,
-      active,
-      backend,
-      cudaReady,
-      vulkanSelected,
-      blocks,
-    }
+    const cuda = runtime.value.loaded && runtime.value.actual_device === 'cuda'
+    return { label: runtime.value.loaded ? (cuda ? 'CUDA' : 'CPU') : '未加载',
+      detail: runtime.value.fallback_reason ? `已回退 CPU：${runtime.value.fallback_reason}` : runtime.value.loaded ? `${cuda ? 'CUDA' : 'CPU'} · ${models.value.find(m => m.id === runtime.value.active_model)?.name || runtime.value.active_model}` : '选择模型后启动识别',
+      active: Boolean(cuda), backend: cuda ? 'cuda' : 'cpu', cudaReady: Boolean(hardware.value?.torch.cuda_available),
+      vulkanSelected: false, blocks: [] }
   })
   const accelerationRecommendation = computed<AccelerationRecommendation>(() => {
-    const installed = models.value.filter((model) => model.exists)
-    const requireGpu = Boolean(config.value.server.gpu_required && !config.value.server.allow_cpu_fallback)
-    const benchmarked = installed
-      .map((model) => ({ model, benchmark: bestBenchmarkForModel(model, requireGpu) }))
-      .filter((entry) => entry.benchmark?.ok && Number(entry.benchmark?.recognition_seconds || 0) > 0)
-      .sort((a, b) => Number(a.benchmark?.recognition_seconds || 0) - Number(b.benchmark?.recognition_seconds || 0))
-    const daily = installed.find((model) => model.role === 'daily')
-    const quality = installed.find((model) => model.role === 'quality')
-    const fallback = daily || quality || installed[0] || selectedModel.value
-    const recommendedModel = benchmarked[0]?.model || fallback
-    const benchmarkSeconds = benchmarked[0]?.benchmark?.recognition_seconds ?? null
-    const cudaReady = Boolean(hardware.value?.torch.cuda_available)
-    const gpu = cudaReady
-    const gpu_backend: AppConfig['server']['gpu_backend'] = cudaReady ? 'cuda' : config.value.server.gpu_backend
-    const reason = benchmarked[0]
-      ? `已安装${requireGpu ? ' GPU' : ''}模型中最快：${Number(benchmarkSeconds || 0).toFixed(2)}s。`
-      : cudaReady
-        ? 'CUDA 可用；测试全部已安装模型后可确认最快日用选择。'
-        : hardware.value?.recommendation || '测试已安装模型后可选择日用模型。'
-
-    return {
-      model: recommendedModel?.id || config.value.server.model,
-      modelName: recommendedModel?.name || config.value.server.model,
-      gpu,
-      gpu_backend,
-      reason,
-      benchmarkSeconds: benchmarkSeconds == null ? null : Number(benchmarkSeconds),
-    }
+    const cuda = Boolean(hardware.value?.torch.cuda_available)
+    const model = cuda ? 'qwen3-asr-0.6b' : 'sensevoice'
+    return { model, modelName: cuda ? 'Qwen3-ASR 0.6B' : 'SenseVoice INT8', gpu: cuda, gpu_backend: 'cuda',
+      reason: cuda ? 'CUDA 运行环境可用，推荐日常使用 Qwen 0.6B' : '无需独立显卡，使用 CPU 即可识别五种语言', benchmarkSeconds: null }
+  })
+  const activeModelLabel = computed(() => {
+    const active = runtime.value.loaded ? runtime.value.active_model : config.value.server.model
+    const label = models.value.find(m => m.id === active)?.name || active
+    return runtime.value.loaded && active !== config.value.server.model ? `${label}（已回退）` : label
   })
 
   async function apiFetch<T = any>(path: string, options?: RequestInit, timeoutMs = 0): Promise<T | null> {
@@ -603,8 +551,7 @@ export const useAppStore = defineStore('app', () => {
     connectionErrorQuietUntil.value = Math.max(connectionErrorQuietUntil.value, Date.now() + ms)
   }
 
-  async function fetchStatus(timeoutMs = 0) {
-    const data = await apiFetch<any>('/status', undefined, timeoutMs)
+  function applyServiceStatus(data: any) {
     if (data) {
       serverRunning.value = Boolean(data.server.running)
       clientRunning.value = Boolean(data.client.running)
@@ -627,11 +574,22 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  async function fetchStatus(timeoutMs = 0) {
+    const data = await apiFetch<any>('/status', undefined, timeoutMs)
+    applyServiceStatus(data)
+  }
+
+  let healthRequest = 0
   async function fetchHealth(timeoutMs = 0) {
+    const request = ++healthRequest
     const data = await apiFetch<any>('/health', undefined, timeoutMs)
-    if (data) {
+    if (data && request === healthRequest) {
+      apiReady.value = true
+      runtime.value = data.runtime || {}
+      models.value = models.value.map(model => ({ ...model, loaded: Boolean(runtime.value.loaded && runtime.value.active_model === model.id), active: Boolean(runtime.value.loaded && runtime.value.active_model === model.id) }))
+      busy.value = Boolean(data.activities?.length)
       recentIssues.value = data.recent_issues || []
-      await fetchStatus(timeoutMs)
+      applyServiceStatus(data)
     }
   }
 
@@ -694,7 +652,7 @@ export const useAppStore = defineStore('app', () => {
     const data = await apiFetch<{ config: AppConfig }>('/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config.value),
+      body: JSON.stringify({ client: config.value.client }),
     })
     if (data?.config) config.value = data.config
     return data
@@ -702,7 +660,7 @@ export const useAppStore = defineStore('app', () => {
 
   async function fetchModels() {
     const data = await apiFetch<any>('/models')
-    if (data) models.value = data.models || []
+    if (data) { models.value = data.models || []; modelDownloads.value = data.downloads || modelDownloads.value }
   }
 
   async function fetchHardware() {
@@ -735,16 +693,33 @@ export const useAppStore = defineStore('app', () => {
     return targets.length
   }
 
+  async function applyRecognition(model: string, language: string, compute_mode: AppConfig['server']['compute_mode']) {
+    if (applyingRecognition.value || busy.value) return null
+    applyingRecognition.value = true
+    try {
+      const data = await apiFetch<{config: AppConfig; runtime: typeof runtime.value}>('/models/apply', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({model, language, compute_mode}),
+      })
+      if (data) {
+        config.value = data.config
+        runtime.value = data.runtime
+        showToast(data.runtime.fallback_reason ? '已使用 CPU 方案，详情见当前加速' : '识别设置已应用')
+      } else showToast(lastError.value)
+      await Promise.all([fetchModels(), fetchHealth()])
+      return data
+    } finally { applyingRecognition.value = false }
+  }
+
   async function selectModel(model: string) {
-    config.value.server.model = model
-    config.value.server.model_dir = ''
-    await apiFetch('/models/select', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model }),
+    return applyRecognition(model, config.value.server.language, config.value.server.compute_mode)
+  }
+
+  async function importModel(model: string, directory: string) {
+    const data = await apiFetch(`/models/${encodeURIComponent(model)}/import`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({directory}),
     })
-    await fetchConfig()
-    await fetchModels()
+    if (data) { await fetchModels(); showToast('模型已导入') }
+    return data
   }
 
   async function openModelFolder(model: string) {
@@ -780,14 +755,8 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function applyAccelerationRecommendation() {
-    const recommendation = accelerationRecommendation.value
-    config.value.server.model = recommendation.model
-    config.value.server.model_dir = ''
-    config.value.server.gpu = recommendation.gpu
-    config.value.server.gpu_backend = recommendation.gpu_backend
-    await saveConfig()
-    await selectModel(recommendation.model)
-    await Promise.all([fetchConfig(), fetchModels(), fetchHardware(), fetchBenchmarks()])
+    const model = accelerationRecommendation.value.model
+    return applyRecognition(model, config.value.server.language, 'auto')
   }
 
   async function startServer() {
@@ -886,12 +855,12 @@ export const useAppStore = defineStore('app', () => {
 
   async function startAll() {
     await apiFetch('/start-all', { method: 'POST' })
-    await fetchStatus()
+    await fetchHealth()
   }
 
   async function stopAll() {
     await apiFetch('/stop-all', { method: 'POST' })
-    await fetchStatus()
+    await fetchHealth()
   }
 
   async function fetchHistory() {
@@ -1013,13 +982,17 @@ export const useAppStore = defineStore('app', () => {
     ws.current = new WebSocket(WS_RECOGNITION_URL)
 
     ws.current.onopen = () => {
-      wsConnected.value = true
+      wsConnected.value = false
       currentPartial.value = ''
     }
 
     ws.current.onmessage = (event) => {
       const data = JSON.parse(event.data)
-      if (data.type === 'result') {
+      if (data.type === 'connected' || data.type === 'monitor_ready') {
+        wsConnected.value = true
+      } else if (data.type === 'connecting') {
+        wsConnected.value = false
+      } else if (data.type === 'result') {
         currentPartial.value = ''
         const duration = Number(data.duration_seconds ?? data.delay ?? ((data.time_complete || 0) - (data.time_submit || 0)))
         const entry: HistoryEntry = {
@@ -1034,8 +1007,11 @@ export const useAppStore = defineStore('app', () => {
         }
         if (!history.value.some((item) => item.task_id === entry.task_id)) {
           history.value.push(entry)
+          history.value = history.value.slice(-200)
         }
         fetchStats()
+      } else if (data.type === 'recognition_error') {
+        showToast(data.error || '识别失败，请查看诊断')
       } else if (data.type === 'partial') {
         currentPartial.value = data.text || ''
       } else if (data.type === 'disconnected') {
@@ -1174,9 +1150,11 @@ export const useAppStore = defineStore('app', () => {
     history, errorMarks, wsConnected, currentPartial, topWords,
     config, models, modelDownloads, logs, recentIssues, hotwordContent, selectedHotword, toastMessage,
     ffmpeg, llmConfig, transcriptions, audioInputDevices, audioInputTest, audioInputTesting, audioInputTestPhase, audioInputTestProgress, audioLevelScan, audioLevelScanning, playingTaskId, runtimeDiagnostics, runtimeRestarting, hardware, benchmarks, benchmarkingModels, lastError,
+    cudaComponent, fetchCudaComponent, installCudaComponent, apiReady, runtime, busy, applyingRecognition, applyRecognition, importModel, activeModelLabel,
     apiBase: API_BASE,
     frontendSource: FRONTEND_SOURCE,
     appBuildLabel: APP_BUILD_LABEL,
+    appVersionLabel: `v${APP_VERSION}`,
     appBuildTime: APP_BUILD_TIME,
     latestEntry, totalEntries, avgDelay, serviceLabel, selectedModel, accelerationState, accelerationRecommendation,
     fetchStatus, fetchHealth, fetchConfig, fetchAudioInputDevices, testAudioInput, scanAudioLevels, saveConfig, fetchModels, fetchHardware, fetchBenchmarks, runBenchmark, runAllBenchmarks, selectModel, openModelFolder, startModelScopeDownload, fetchModelScopeDownload, applyAccelerationRecommendation,

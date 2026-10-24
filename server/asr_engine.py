@@ -3,8 +3,26 @@ import tempfile
 from typing import Optional
 
 from common.logger import setup_logger
+from common.model_catalog import QWEN_LANGUAGES, validate_model, model_installed
 
 logger = setup_logger("asr_engine")
+
+
+def _create_sherpa_recognizer(factory, **kwargs):
+    """sherpa 1.13 opens tokens with a narrow Windows path; ONNX uses wide paths."""
+    tokens = kwargs["tokens"]
+    if os.name != "nt" or tokens.isascii():
+        return factory(**kwargs)
+    # An ASCII relative filename works even when the working directory is Chinese.
+    # Only the small vocabulary is copied, and it is read during construction.
+    temporary = tempfile.NamedTemporaryFile(prefix="voicetype_tokens_", suffix=".txt", dir=".", delete=False)
+    try:
+        with temporary, open(tokens, "rb") as source:
+            temporary.write(source.read())
+        kwargs["tokens"] = os.path.basename(temporary.name)
+        return factory(**kwargs)
+    finally:
+        os.unlink(temporary.name)
 
 
 class ASREngine:
@@ -16,6 +34,8 @@ class ASREngine:
         gpu_backend: str = "cuda",
         gpu_required: bool = True,
         allow_cpu_fallback: bool = False,
+        language: str = "zh",
+        cpu_threads: int = 4,
     ):
         self._model = model
         self._model_dir = model_dir
@@ -29,9 +49,16 @@ class ASREngine:
         self._acceleration = "not-initialized"
         self._using_gpu = False
         self._last_error = ""
+        self.language = language
+        self.cpu_threads = cpu_threads
 
     def initialize(self) -> bool:
         try:
+            validate_model(self._model, self.language)
+            if not model_installed(self._model, self._model_dir):
+                return self._fail("模型文件不完整，请下载或导入与引擎匹配的模型")
+            if self._gpu_required and self._model in ("sensevoice", "paraformer"):
+                return self._fail("该模型使用 CPU，请把运行方式改为自动选择或 CPU")
             if self._model in ("qwen3-asr-1.7b", "qwen3-asr-0.6b"):
                 return self._init_qwen3_asr()
             elif self._model == "qwen3-asr-1.7b-gguf-vulkan":
@@ -73,7 +100,14 @@ class ASREngine:
                 model_name = self._model_dir
 
             logger.info(f"Loading Qwen3-ASR from local path: {model_name}")
-            self._qwen_model = Qwen3ASRModel.from_pretrained(model_name)
+            import torch
+            use_cuda = self._gpu and torch.cuda.is_available()
+            if self._gpu and not use_cuda:
+                return self._fail("NVIDIA CUDA 不可用，请安装 GPU 运行组件或选择 CPU 模型")
+            self._qwen_model = Qwen3ASRModel.from_pretrained(
+                model_name, dtype=torch.float16 if use_cuda else torch.float32,
+                device_map="cuda:0" if use_cuda else "cpu", max_inference_batch_size=1,
+            )
             if self._gpu:
                 try:
                     import torch
@@ -115,8 +149,7 @@ class ASREngine:
             return True
 
         except ImportError:
-            logger.warning("qwen-asr package not found, trying sherpa-onnx fallback")
-            return self._init_sherpa_onnx()
+            return self._fail("缺少 Qwen GPU 运行组件，请安装组件或使用 SenseVoice CPU 模型")
         except Exception as e:
             logger.error(f"Failed to init Qwen3-ASR: {e}")
             self._last_error = str(e)
@@ -149,7 +182,7 @@ class ASREngine:
         import sherpa_onnx
 
         provider = "cpu"
-        if self._gpu:
+        if self._gpu and self._model not in ("sensevoice", "paraformer"):
             if self._gpu_backend == "cuda":
                 provider = "cuda"
             elif self._gpu_backend == "vulkan":
@@ -185,12 +218,13 @@ class ASREngine:
                 return False
 
             try:
-                self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                self._recognizer = _create_sherpa_recognizer(sherpa_onnx.OfflineRecognizer.from_sense_voice,
                     model=model_file,
                     tokens=tokens_file,
-                    num_threads=4,
+                    num_threads=self.cpu_threads,
                     provider=provider,
-                    language="auto",
+                    language=self.language,
+                    use_itn=True,
                 )
             except Exception as e:
                 if self._gpu_required and provider != "cpu" and not self._allow_cpu_fallback:
@@ -206,10 +240,10 @@ class ASREngine:
                 return False
 
             try:
-                self._recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
+                self._recognizer = _create_sherpa_recognizer(sherpa_onnx.OfflineRecognizer.from_paraformer,
                     paraformer=model_file,
                     tokens=tokens_file,
-                    num_threads=4,
+                    num_threads=self.cpu_threads,
                     provider=provider,
                 )
             except Exception as e:
@@ -294,6 +328,7 @@ class ASREngine:
         return None
 
     def recognize(self, audio_data: bytes, sample_rate: int = 16000) -> Optional[str]:
+        self._last_error = ""
         if self._backend == "qwen-asr" and self._qwen_model:
             return self._recognize_qwen(audio_data, sample_rate)
         elif self._backend == "sherpa-onnx" and self._recognizer:
@@ -319,7 +354,8 @@ class ASREngine:
                     wf.setframerate(sample_rate)
                     wf.writeframes(audio_array.tobytes())
 
-                results = self._qwen_model.transcribe(audio=tmp_path, language=None)
+                self._last_error = ""
+                results = self._qwen_model.transcribe(audio=tmp_path, language=QWEN_LANGUAGES[self.language])
                 if results and len(results) > 0:
                     text = results[0].text.strip()
                     logger.info(f"Qwen3-ASR result: {text}")
@@ -333,6 +369,7 @@ class ASREngine:
 
         except Exception as e:
             logger.error(f"Qwen3-ASR recognition failed: {e}")
+            self._last_error = str(e)
             return None
 
     def _recognize_sherpa(self, audio_data: bytes, sample_rate: int) -> Optional[str]:
@@ -351,6 +388,7 @@ class ASREngine:
 
         except Exception as e:
             logger.error(f"Sherpa-ONNX recognition failed: {e}")
+            self._last_error = str(e)
             return None
 
     @property
