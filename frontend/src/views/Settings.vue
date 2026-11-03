@@ -13,10 +13,6 @@
         <div v-if="draftSpec && !draftSpec.language_hint" class="row label">此模型自动识别中文和英语，不支持强制指定语言；上述选择不会施加语言约束。</div>
         <div class="row"><span class="label">已配置：{{ store.selectedModel?.name }} · {{ languageNames[store.config.server.language] }}<br>正在使用：{{ store.runtime.loaded ? store.activeModelLabel : '未加载' }}</span></div>
       </div>
-      <div v-if="store.hardware?.nvidia_gpu && !store.hardware?.torch.cuda_available && store.cudaComponent.portable" class="panel">
-        <div class="row"><span><span class="value">可选 GPU 运行组件</span><span class="label">仅 NVIDIA 用户需要，下载体积见进度；CPU 模型无需安装。</span></span><button class="btn btn-small" :disabled="store.cudaComponent.status === 'running'" @click="store.installCudaComponent()">{{ store.cudaComponent.status === 'running' ? '下载中' : '下载组件' }}</button></div>
-        <p class="label">{{ store.cudaComponent.error || store.cudaComponent.message }} <template v-if="store.cudaComponent.total_bytes">{{ formatSize(store.cudaComponent.downloaded_bytes || 0) }} / {{ formatSize(store.cudaComponent.total_bytes) }}</template></p>
-      </div>
       <div class="model-list">
         <div v-for="model in store.models" :key="model.id" class="model-row" :class="{active: draftModel === model.id}">
           <span><strong>{{ model.name }}</strong><small>{{ modelSummary(model) }}</small><small v-if="model.implemented && !model.exists">下载约 {{ formatSize(model.download_bytes) }}</small></span>

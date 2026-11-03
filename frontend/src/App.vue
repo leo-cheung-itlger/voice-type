@@ -32,6 +32,7 @@
     </section>
 
     <section class="workspace">
+      <SetupGuide />
       <router-view />
     </section>
 
@@ -71,6 +72,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from './stores/app'
+import SetupGuide from './components/SetupGuide.vue'
 
 const store = useAppStore()
 const router = useRouter()

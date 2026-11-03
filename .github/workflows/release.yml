@@ -1,0 +1,103 @@
+name: Build portable release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without v prefix
+        required: true
+        default: 1.0.0
+  push:
+    branches: [codex/portable-release]
+    paths:
+      - .github/workflows/release.yml
+      - scripts/**
+      - common/**
+      - api/**
+      - frontend/**
+      - tests/**
+permissions:
+  contents: read
+concurrency:
+  group: portable-${{ github.ref }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: pwsh
+env:
+  RELEASE_VERSION: ${{ inputs.version || '1.0.0' }}
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+jobs:
+  cpu:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Verify Python contracts
+        run: |
+          python -m pip install --no-cache-dir --require-hashes -r requirements-cpu.lock
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build desktop
+        working-directory: frontend
+        run: |
+          npm ci
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run desktop:build -- --no-bundle
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Publish capture helper and collect notices
+        run: |
+          dotnet publish tools/windows_voice_capture/VoiceCaptureHelper.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -o tools/windows_voice_capture/publish
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/collect_licenses.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $runtimeVersion = (Get-ChildItem tools/windows_voice_capture/publish/System.Private.CoreLib.dll).VersionInfo.ProductVersion.Split('+')[0]
+          Invoke-WebRequest "https://raw.githubusercontent.com/dotnet/runtime/v$runtimeVersion/LICENSE.TXT" -OutFile tools/windows_voice_capture/publish/DOTNET-LICENSE.txt
+          Invoke-WebRequest "https://raw.githubusercontent.com/dotnet/runtime/v$runtimeVersion/THIRD-PARTY-NOTICES.TXT" -OutFile tools/windows_voice_capture/publish/DOTNET-THIRD-PARTY-NOTICES.txt
+      - name: Package isolated CPU runtime
+        run: |
+          python scripts/build_portable.py --version $env:RELEASE_VERSION --exe frontend/src-tauri/target/release/voicetype.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portable-cpu
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            dist/releases/*-windows-x64.zip
+            dist/releases/*-components.json
+  cuda:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Package optional CUDA runtime
+        run: |
+          python scripts/build_portable.py --version $env:RELEASE_VERSION --cuda-only
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portable-cuda
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            dist/releases/*-cuda.zip.part*
+            dist/releases/*-cuda-manifest.json

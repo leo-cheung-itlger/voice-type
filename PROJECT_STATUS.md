@@ -1,5 +1,23 @@
 # PROJECT_STATUS
 
+## 公开便携版发布准备（2026-11-03）
+
+用户已确认：源码采用 MIT；发布 Windows x64 CPU 基础包，不内置模型和 FFmpeg；首次打开引导下载 SenseVoice；NVIDIA 用户查看组件准确大小及模型估算大小后确认下载，验证驱动兼容性后自动启用 Qwen 0.6B，保留 CPU 模型备用。使用 GitHub Actions 分别构建 CPU／CUDA。公开下载核验完成后清理本地临时发行产物，本地不长期保留正式包。
+
+已实现首次使用引导、绑定确认哈希的 GPU 下载接口、安装前 GPU 验证及成功后的下载副本清理；新增独立 CUDA 打包、云构建和第三方声明收集脚本。当前 18 项 Python 回归、Python 语法检查、前端类型检查及生产构建通过。云构建、运行界面及本次便携包验收仍待执行，尚未发布新二进制。
+
+## 本地构建存储（2026-11-03）
+
+用户决定暂停 VoiceType 开发，接受以后重新配置与编译。本轮已删除 `venv/`、`frontend/node_modules/`、`frontend/dist/`、全部 `dist/`、`tools/ffmpeg/`、录音辅助程序的 `bin/obj/publish`、日志、Python/测试/浏览器缓存及 `vs_BuildTools.exe`。合计移除 7,016,324,398 字节（6.534 GiB），目录从 6.640 GiB 缩至约 108.24 MiB（文档更新前）。源码、Git、全部 data、依赖锁与已有文档修改保留，665 份保留文件的 SHA-256 汇总前后一致。未启动或重建应用；当前没有可直接使用的 VoiceType 运行环境或本地发行包。恢复步骤见 RUNBOOK 的“暂停开发后的恢复”。
+
+本机 PATH 已有系统 FFmpeg/ffprobe；项目内副本已清理。文件转录会使用系统组件，普通快捷键语音输入无需 FFmpeg。正式便携包内置 Python 运行时，最终用户无需安装开发用 venv。
+
+此前清理记录：
+
+经用户确认，已清理 `frontend/src-tauri/target`、`target-codex-build7` 与 local3 CUDA ZIP 的两个分卷；随后清理 local1/local2 旧CPU发布目录、local2 CUDA展开目录及“便携验证 空格”测试副本。测试副本的4份配置/文字JSON已保留于 `data/portable-validation/retained-config-20261101/`。
+
+用户同时确认清理旧录音：`data/recordings/` 中音频及 `data/archive/` 中WAV已删除，录音目录重建为空；主配置、历史文字与归档JSON保留，历史音频无法继续回放。当时保留开发环境与 local3 完整发布目录，随后按上述暂停开发决定继续清理；CPU/CUDA ZIP 已于2026-11-03较早一轮删除。此前执行记录见[空间优化收益表](../computer-organization/空间优化收益表.md)。
+
 ## 当前交付状态（2026-10-24）
 
 Windows x64 便携测试版的硬件策略、语言、模型管理和打包代码已实现。源码仓库为 https://github.com/leo-cheung-itlger/voice-type 。**二进制预发行尚未发布，不能宣称下载即用或全面硬件兼容。**
@@ -44,9 +62,9 @@ Windows x64 便携测试版的硬件策略、语言、模型管理和打包代�
 2. 真正无 CUDA／无 PyTorch 机器及低配实机。开发机隔离运行时和受限线程测试只能补充证据，不能替代实机。
 3. 实际显存不足、驱动不兼容恢复；当前有故障模拟回归，不能称已覆盖所有驱动。
 4. Paraformer 和 Qwen 1.7B 本轮未做完整运行验收；日语、韩语尚未逐项实测。
-5. 整理 FFmpeg 对应源码和全部第三方再分发材料；当前只有本机构建包，不满足公开二进制发布条件。项目源码许可证由维护者选择。
+5. 发行包采用 MIT，默认不分发 FFmpeg。云构建收集 Rust／前端依赖声明，保留 Python wheel 与 .NET 许可；发行产物中仍需核验材料完整性。
 6. 本轮没有重新验证真实 F1 按键到其他应用粘贴、托盘退出和干净系统的桌面 WebView。旧版录音验证不替代新便携包验收。
 
 ## 下一步
 
-按 RUNBOOK 的发布验收顺序完成剩余项目，再创建 GitHub 预发行。不得把构建成功标为干净环境验收通过。
+完成云构建和本次便携包验收后发布，再清理本地临时产物；以上历史验证不替代新版本验收。

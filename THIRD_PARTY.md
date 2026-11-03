@@ -2,6 +2,8 @@
 
 此文件说明来源；具体许可文本以发行包内各组件的 LICENSE、NOTICE 和 `.dist-info/licenses/` 为准。构建脚本保留依赖元数据及许可文件。模型由用户单独下载，不随源码或 CPU 基础包分发。
 
+VoiceType 自有源码采用根目录 LICENSE 中的 MIT 许可。默认公开便携包不分发 FFmpeg、SciPy 或模型权重；已安装的系统 FFmpeg 通过 PATH 复用。需要处理音视频文件时用户可自行安装 FFmpeg。
+
 | 组件 | 来源 | 许可说明 |
 | --- | --- | --- |
 | CPython 3.12.10 Windows embeddable x64 | [Python 官方发行页](https://www.python.org/downloads/release/python-31210/) | PSF License；发布包保留 LICENSE.txt。后续安全版本升级仍需测试 |

@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -834,11 +834,20 @@ async def get_cuda_component():
 
 
 @app.post("/api/components/cuda")
-async def install_cuda_component():
+def install_cuda_component(approval: dict = Body(...)):
     try:
-        return components.start()
+        return components.start(approval.get("sha256", ""))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/components/cuda/plan")
+def get_cuda_plan():
+    try:
+        result = components.plan()
+        return {key: result[key] for key in ("version", "bytes", "sha256")}
+    except Exception as exc:
+        raise HTTPException(400, f"无法读取组件大小，可继续使用 CPU：{exc}") from exc
 
 
 @app.get("/api/health")

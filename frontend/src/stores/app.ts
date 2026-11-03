@@ -434,14 +434,21 @@ export const useAppStore = defineStore('app', () => {
   const wsConnected = ref(false)
   const currentPartial = ref('')
   const topWords = ref<{ word: string; count: number }[]>([])
-  const cudaComponent = ref<{status: string; message?: string; error?: string; portable?: boolean; downloaded_bytes?: number; total_bytes?: number}>({status:'idle'})
+  const cudaComponent = ref<{status: string; installed?: boolean; message?: string; error?: string; portable?: boolean; downloaded_bytes?: number; total_bytes?: number}>({status:'idle'})
   async function fetchCudaComponent() {
     const data = await apiFetch<typeof cudaComponent.value>('/components/cuda')
     if (data) cudaComponent.value = data
+    return data
   }
-  async function installCudaComponent() {
-    const data = await apiFetch<typeof cudaComponent.value>('/components/cuda', {method:'POST'})
+  async function fetchCudaPlan() {
+    return apiFetch<{version: string; bytes: number; sha256: string}>('/components/cuda/plan', undefined, 40000)
+  }
+  async function installCudaComponent(sha256: string) {
+    const data = await apiFetch<typeof cudaComponent.value>('/components/cuda', {
+      method:'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({sha256}),
+    }, 40000)
     if (data) cudaComponent.value = data
+    return data
   }
   const apiReady = ref(false)
   const applyingRecognition = ref(false)
@@ -1158,7 +1165,7 @@ export const useAppStore = defineStore('app', () => {
     history, errorMarks, wsConnected, currentPartial, topWords,
     config, models, modelDownloads, logs, recentIssues, hotwordContent, selectedHotword, toastMessage,
     ffmpeg, llmConfig, transcriptions, audioInputDevices, audioInputTest, audioInputTesting, audioInputTestPhase, audioInputTestProgress, audioLevelScan, audioLevelScanning, playingTaskId, runtimeDiagnostics, runtimeRestarting, hardware, benchmarks, benchmarkingModels, lastError,
-    cudaComponent, fetchCudaComponent, installCudaComponent, apiReady, runtime, busy, applyingRecognition, applyRecognition, importModel, activeModelLabel,
+    cudaComponent, fetchCudaComponent, fetchCudaPlan, installCudaComponent, apiReady, runtime, busy, applyingRecognition, applyRecognition, importModel, activeModelLabel,
     apiBase: API_BASE,
     frontendSource: FRONTEND_SOURCE,
     appBuildLabel: APP_BUILD_LABEL,

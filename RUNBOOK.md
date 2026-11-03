@@ -9,6 +9,22 @@ Frontend dependencies are managed by `frontend/package-lock.json`.
 
 Do not commit `venv/`, `frontend/node_modules/`, logs, local recordings, downloaded models, or secrets.
 
+## 暂停开发后的恢复
+
+本地环境与构建产物已清理，源码、依赖锁、配置和 data 保留。恢复时从项目根目录执行：
+
+```powershell
+py -3.12 -m venv venv
+.\venv\Scripts\python.exe -m pip install --require-hashes -r requirements-cpu.lock
+# 当前保存的配置为 Qwen/CUDA，需要同时恢复 GPU 依赖：
+.\venv\Scripts\python.exe -m pip install --require-hashes -r requirements-cuda.lock --extra-index-url https://download.pytorch.org/whl/cu128
+npm ci --prefix frontend
+```
+
+保留配置仍引用外部模型目录，恢复时先确认模型路径存在。需要 Windows 语音增强时，用 .NET SDK 重新执行 `dotnet publish tools\windows_voice_capture\VoiceCaptureHelper.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -o tools\windows_voice_capture\publish`，然后运行 `VoiceType-live-ui.bat`。桌面 EXE 按 Desktop Packaging 章节重建。
+
+`venv` 是从源码运行时使用的隔离 Python 环境；便携包把运行时放在 `runtime/`，可选 GPU 组件放在 `runtime-cuda/`，最终用户无需安装开发用 venv。文件转录需要 FFmpeg，可使用 PATH 中已有的 `ffmpeg` 和 `ffprobe`，或按下方组件解析说明配置路径；普通快捷键语音输入无需 FFmpeg。
+
 ## Common Commands
 
 Install Python dependencies:
@@ -369,6 +385,10 @@ File transcription validation:
 
 ## Desktop Packaging
 
+首选 `.github/workflows/release.yml` 的 GitHub Actions Windows 构建。CPU／CUDA 两个独立任务输出七天临时 artifact；这些不是正式下载页面。下载两套 artifact 到同一临时目录后，运行 `python scripts/prepare_release.py <目录> <版本>`，逐文件及整卷校验并合并组件清单，随后按下述验收发布 GitHub Release。每个版本同时上传 CPU ZIP、全部 CUDA 分卷、合并后的 components.json 和 SHA256SUMS.txt。公开下载验证成功后才清理本地明确列出的临时路径。
+
+本地打包前执行 `python scripts/collect_licenses.py`（需要 `npm ci` 和 `cargo fetch --locked --manifest-path frontend/src-tauri/Cargo.toml` 的依赖源码）。CPU 包附带 Rust／前端依赖声明、wheel 许可及 .NET 声明；CUDA 独立任务使用 `python scripts/build_portable.py --version <版本> --cuda-only`，无需本机重新建立 GPU 开发环境。
+
 构建机需要 Python 3.12 x64、Node/npm、Rust、MSVC C++ Build Tools 和 .NET SDK。最终用户不需要这些开发工具。
 
 ```powershell
@@ -383,7 +403,7 @@ cd ..
 
 产物为 dist/releases/VoiceType-<version>-windows-x64.zip、可选 CUDA ZIP／分卷及 VoiceType-<version>-components.json。CPU ZIP 不含模型和 PyTorch。下载运行组件只允许与 portable.json 对应的 GitHub tag；尚无该预发行时下载会明确失败。上传时同时提供 manifest 和 CUDA ZIP（或全部分卷），遵守单文件大小限制。
 
-打包前在 tools/ffmpeg/ 提供该二进制的 LICENSE.txt、SOURCE.txt，并完成第三方再分发材料；只有网址不足以替代适用许可证要求的对应源码。项目源码许可尚需维护者选择，参考 THIRD_PARTY.md。
+默认包不分发 FFmpeg，优先复用用户 PATH 中的 ffmpeg/ffprobe。只有显式传入 `--include-ffmpeg` 才需准备 tools/ffmpeg/ 的 LICENSE.txt、SOURCE.txt 和对应源码材料。项目源码采用 MIT，第三方许可见 THIRD_PARTY.md。
 
 发布验收顺序：
 

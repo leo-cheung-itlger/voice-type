@@ -48,6 +48,7 @@ data/runtime_capture/
 data/portable-validation/
 data/components/
 dist/build-cache/
+dist/third-party-licenses/
 *.onnx
 *.gguf
 *.safetensors

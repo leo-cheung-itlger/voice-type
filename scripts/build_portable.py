@@ -34,7 +34,7 @@ def runtime(folder, cuda=False, installed=False):
     lock = ROOT / ("requirements-cuda.lock" if cuda else "requirements-cpu.lock")
     if not lock.exists():
         raise RuntimeError(f"Resolve and review pinned dependencies first: {lock.name}")
-    command = [sys.executable, "-m", "pip", "install", "--no-compile", "--target", str(packages), "--require-hashes", "-r", str(lock), "--index-url", "https://pypi.org/simple"]
+    command = [sys.executable, "-m", "pip", "install", "--no-compile", "--no-cache-dir", "--target", str(packages), "--require-hashes", "-r", str(lock), "--index-url", "https://pypi.org/simple"]
     if cuda:
         command.extend(["--extra-index-url", "https://download.pytorch.org/whl/cu128"])
     if installed:
@@ -80,16 +80,50 @@ def archive_tree(folder, destination):
                 bundle.write(path, str(Path(folder.name) / path.relative_to(folder)))
 
 
+def build_cuda(parent, version, installed=False):
+    component = parent / f"VoiceType-{version}-cuda"
+    component.mkdir(exist_ok=False)
+    runtime(component / "runtime-cuda", cuda=True, installed=installed)
+    component_zip = component.with_name(component.name + ".zip")
+    # Component archive contains runtime-cuda directly, so install at the portable root.
+    archive_tree(component / "runtime-cuda", component_zip)
+    spec = {"name": component_zip.name, "bytes": component_zip.stat().st_size, "sha256": digest(component_zip)}
+    if component_zip.stat().st_size > 1900000000:
+        parts = []
+        with component_zip.open("rb") as source:
+            while source.tell() < component_zip.stat().st_size:
+                part = component_zip.with_name(component_zip.name + f".part{len(parts) + 1:02d}")
+                remaining = min(1900000000, component_zip.stat().st_size - source.tell())
+                with part.open("wb") as output:
+                    while remaining:
+                        chunk = source.read(min(8 * 1024 * 1024, remaining))
+                        output.write(chunk)
+                        remaining -= len(chunk)
+                parts.append({"name": part.name, "bytes": part.stat().st_size, "sha256": digest(part)})
+        spec["parts"] = parts
+    return spec
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", default="1.0.0-alpha.1")
-    parser.add_argument("--exe", type=Path, required=True)
+    parser.add_argument("--exe", type=Path)
+    parser.add_argument("--cuda-only", action="store_true")
     parser.add_argument("--cuda", action="store_true")
     parser.add_argument("--include-ffmpeg", action="store_true", help="Include the optional file-transcription component")
     parser.add_argument("--installed", action="store_true", help="Use the locked local environment after checking installed RECORD hashes")
     args = parser.parse_args()
     if sys.version_info[:2] != (3, 12) or sys.maxsize < 2**32:
         raise RuntimeError("Build with CPython 3.12 x64")
+    if args.cuda_only:
+        parent = ROOT / "dist/releases"
+        parent.mkdir(parents=True, exist_ok=True)
+        manifest = {"version": args.version, "cuda": build_cuda(parent, args.version, args.installed)}
+        (parent / f"VoiceType-{args.version}-cuda-manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        print(json.dumps(manifest, indent=2))
+        return
+    if not args.exe or not args.exe.is_file():
+        raise RuntimeError("Provide --exe for the CPU portable build")
     out = ROOT / "dist/releases" / f"VoiceType-{args.version}-windows-x64"
     out.mkdir(parents=True, exist_ok=False)  # never silently overwrite a release
     shutil.copy2(args.exe, out / "VoiceType.exe")
@@ -98,7 +132,7 @@ def main():
             target = out / source.relative_to(ROOT)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
-    for name in ("hot-zh.txt", "hot-en.txt", "hot-rule.txt", "README.md", "THIRD_PARTY.md"):
+    for name in ("hot-zh.txt", "hot-en.txt", "hot-rule.txt", "README.md", "THIRD_PARTY.md", "LICENSE"):
         shutil.copy2(ROOT / name, out / name)
     for name in ("start-runtime.ps1", "stop-dev.ps1", "mic_format_probe.py"):
         target = out / "scripts" / name
@@ -118,31 +152,16 @@ def main():
     if helper.joinpath("VoiceCaptureHelper.exe").is_file():
         shutil.copytree(helper, out / "tools/windows_voice_capture/publish")
     (out / "portable.json").write_text(json.dumps({"version": args.version, "platform": "windows-x64", "python": "3.12.10", "data": "data", "models": "models", "optional_components": {"ffmpeg": args.include_ffmpeg, "windows_voice_capture": helper.joinpath("VoiceCaptureHelper.exe").is_file()}}, ensure_ascii=False), encoding="utf-8")
+    notices = ROOT / "dist/third-party-licenses"
+    if not notices.is_dir():
+        raise RuntimeError("Run scripts/collect_licenses.py before packaging")
+    shutil.copytree(notices, out / "third-party-licenses")
     runtime(out / "runtime", installed=args.installed)
     archive = out.with_name(out.name + ".zip")
     archive_tree(out, archive)
     manifest = {"version": args.version, "cpu": {"name": archive.name, "bytes": archive.stat().st_size, "sha256": digest(archive)}}
     if args.cuda:
-        component = out.parent / f"VoiceType-{args.version}-cuda"
-        component.mkdir(exist_ok=False)
-        runtime(component / "runtime-cuda", cuda=True, installed=args.installed)
-        component_zip = component.with_name(component.name + ".zip")
-        # Component archive contains runtime-cuda directly, so install at the portable root.
-        archive_tree(component / "runtime-cuda", component_zip)
-        manifest["cuda"] = {"name": component_zip.name, "bytes": component_zip.stat().st_size, "sha256": digest(component_zip)}
-        if component_zip.stat().st_size > 1900000000:
-            parts = []
-            with component_zip.open("rb") as source:
-                while source.tell() < component_zip.stat().st_size:
-                    part = component_zip.with_name(component_zip.name + f".part{len(parts) + 1:02d}")
-                    remaining = min(1900000000, component_zip.stat().st_size - source.tell())
-                    with part.open("wb") as output:
-                        while remaining:
-                            chunk = source.read(min(8 * 1024 * 1024, remaining))
-                            output.write(chunk)
-                            remaining -= len(chunk)
-                    parts.append({"name": part.name, "bytes": part.stat().st_size, "sha256": digest(part)})
-            manifest["cuda"]["parts"] = parts
+        manifest["cuda"] = build_cuda(out.parent, args.version, args.installed)
     (out.parent / f"VoiceType-{args.version}-components.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(json.dumps(manifest, indent=2))
 
