@@ -73,7 +73,7 @@ Supported recognition language choices currently include Mandarin, automatic det
 - AMD/Intel GPU acceleration is not supported yet.
 - Low-end physical hardware and clean Windows 10/11 machines still need dedicated acceptance testing.
 - The repository does not currently publish a guaranteed minimum RAM or VRAM requirement.
-- The source tree is public, but the project license has not been selected yet. Public visibility does not grant redistribution rights.
+- VoiceType source uses the [MIT license](LICENSE); third-party components retain their respective licenses.
 
 ## Build from source
 

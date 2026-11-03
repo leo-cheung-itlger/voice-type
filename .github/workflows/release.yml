@@ -15,6 +15,7 @@ on:
       - api/**
       - frontend/**
       - tests/**
+      - requirements-*
 permissions:
   contents: read
 concurrency:
@@ -63,7 +64,8 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/collect_licenses.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $runtimeVersion = (Get-ChildItem tools/windows_voice_capture/publish/System.Private.CoreLib.dll).VersionInfo.ProductVersion.Split('+')[0]
+          $runtimeVersion = (Get-Content tools/windows_voice_capture/publish/VoiceCaptureHelper.runtimeconfig.json -Raw | ConvertFrom-Json).runtimeOptions.includedFrameworks[0].version
+          Write-Output "Collecting .NET runtime $runtimeVersion notices"
           Invoke-WebRequest "https://raw.githubusercontent.com/dotnet/runtime/v$runtimeVersion/LICENSE.TXT" -OutFile tools/windows_voice_capture/publish/DOTNET-LICENSE.txt
           Invoke-WebRequest "https://raw.githubusercontent.com/dotnet/runtime/v$runtimeVersion/THIRD-PARTY-NOTICES.TXT" -OutFile tools/windows_voice_capture/publish/DOTNET-THIRD-PARTY-NOTICES.txt
       - name: Package isolated CPU runtime
