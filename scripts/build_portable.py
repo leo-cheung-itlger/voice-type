@@ -74,7 +74,7 @@ def runtime(folder, cuda=False, installed=False):
 
 
 def archive_tree(folder, destination):
-    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as bundle:
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True, strict_timestamps=False) as bundle:
         for path in sorted(folder.rglob("*")):
             if path.is_file() and "__pycache__" not in path.parts:
                 bundle.write(path, str(Path(folder.name) / path.relative_to(folder)))
